@@ -1,57 +1,44 @@
-from deepface import DeepFace
-from scipy.spatial.distance import cosine
-import shutil
 import os
+import shutil
 import time
 import cv2
 import numpy as np
+from scipy.spatial.distance import cosine
+from insightface.app import FaceAnalysis
 
-def extract_embedding(image_path, detector_backend="retinaface"):
+# Initialize InsightFace model
+face_app = FaceAnalysis(name='buffalo_l', providers=['CPUExecutionProvider'])  # Use 'cuda' if available
+face_app.prepare(ctx_id=0)  # Use 0 for CPU or CUDA device index for GPU
+
+def extract_embedding(image_path):
     try:
-        embedding_obj = DeepFace.represent(
-            img_path=image_path,
-            model_name="Facenet",
-            detector_backend=detector_backend,
-            enforce_detection=True
-        )
+        img = cv2.imread(image_path)
+        if img is None:
+            print(f"⚠️ Couldn't read image: {image_path}")
+            return []
+
+        faces = face_app.get(img)
         results = []
-        for obj in embedding_obj:
+
+        for face in faces:
+            embedding = face.normed_embedding  # Already L2 normalized
             results.append({
-                "embedding": obj["embedding"],
+                "embedding": embedding,
                 "image_path": image_path,
                 "seen": False
             })
+
         return results
     except Exception as e:
         print(f"❌ Error processing {image_path}: {e}")
         return []
-
-def crop_face(img_path):
-    try:
-        results = DeepFace.extract_faces(img_path=img_path, detector_backend="retinaface", enforce_detection=True)
-        if not results:
-            print(f"No face found in {img_path}")
-            return None
-        face_obj = results[0]  # Only first face
-        face = face_obj["face"]
-
-        # Convert from float32/float64 range [0,1] to uint8 [0,255]
-        if face.max() <= 1.0:
-            face = (face * 255).astype("uint8")
-        else:
-            face = np.clip(face, 0, 255).astype("uint8")
-
-        return face
-    except Exception as e:
-        print(f"❌ Error cropping face in {img_path}: {e}")
-        return None
 
 # === Main comparison logic ===
 if __name__ == "__main__":
     start_time = time.time()
     
     IMAGE_FOLDER = "./img"
-    OUTPUT_FOLDER = "./grouped_faces"
+    OUTPUT_FOLDER = "./grouped_faces_insightface"
     SUPPORTED_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
 
     image_paths = [
@@ -66,7 +53,7 @@ if __name__ == "__main__":
     for path in image_paths:
         all_faces.extend(extract_embedding(path))
 
-    threshold = 0.6
+    threshold = 0.6  # Adjust based on your tests; InsightFace uses cosine similarity
     person_id = 1
     groups = []
 
@@ -87,7 +74,7 @@ if __name__ == "__main__":
 
         groups.append(group)
 
-    # Step 3: Copy images and cropped thumbnails
+    # Step 3: Copy grouped images
     os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
     for group in groups:
@@ -95,19 +82,9 @@ if __name__ == "__main__":
         os.makedirs(folder_name, exist_ok=True)
         for img in group:
             img_name = os.path.basename(img)
-
-            # Copy original image
             dest_path = os.path.join(folder_name, img_name)
             shutil.copy(img, dest_path)
-
-            # Save cropped face thumbnail
-            cropped_face = crop_face(img)
-            if cropped_face is not None:
-                thumb_path = os.path.join(folder_name, f"thumb_{img_name}")
-                cv2.imwrite(thumb_path, cv2.cvtColor(cropped_face, cv2.COLOR_RGB2BGR))
         person_id += 1
 
     print(f"✅ Grouped faces into {len(groups)} people")
-    end_time = time.time()
-    elapsed_time = end_time - start_time
-    print(f"✅ Total time taken: {elapsed_time:.2f} seconds")
+    print(f"✅ Total time taken: {time.time() - start_time:.2f} seconds")

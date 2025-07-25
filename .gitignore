@@ -1,4 +1,6 @@
 key.json
 /compressor/venv
+/compressor/featureenv
 /compressor/yolov8n.pt
 /compressor/yolov8x.pt
+/compressor/fastreid

@@ -7,7 +7,7 @@ import os
 # 1. Load FastReID config + pretrained model
 cfg = get_cfg()
 cfg.merge_from_file("fastreid/configs/Market1501/bagtricks_R50.yml")
-cfg.MODEL.WEIGHTS = "model_final.pth"  # downloaded from FastReID model zoo
+# cfg.MODEL.WEIGHTS = "model_final.pth"  # downloaded from FastReID model zoo
 cfg.MODEL.DEVICE = "cpu"              # or "cuda"
 predictor = DefaultPredictor(cfg)
 

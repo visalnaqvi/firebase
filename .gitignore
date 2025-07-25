@@ -1,2 +1,4 @@
 key.json
 /compressor/venv
+/compressor/yolov8n.pt
+/compressor/yolov8x.pt

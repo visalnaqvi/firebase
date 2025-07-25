@@ -5,10 +5,40 @@ import cv2
 import numpy as np
 from scipy.spatial.distance import cosine
 from insightface.app import FaceAnalysis
-
+import os
+import torch
+import shutil
+import numpy as np
+from PIL import Image
+from torchvision import transforms
+from torch.nn.functional import cosine_similarity
+import torchreid
 # Initialize InsightFace model
 face_app = FaceAnalysis(name='buffalo_l', providers=['CPUExecutionProvider'])  # Use 'cuda' if available
 face_app.prepare(ctx_id=0)  # Use 0 for CPU or CUDA device index for GPU
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+# Load Re-ID model (clothes-based)
+model = torchreid.models.build_model(
+    name='osnet_x1_0', num_classes=1000, pretrained=True
+)
+model.eval()
+model.to(device)
+
+# Image preprocessing for model
+transform = transforms.Compose([
+    transforms.Resize((256, 128)),
+    transforms.ToTensor(),
+    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+])
+def extract_clothes_embedding(image_path):
+    img = Image.open(image_path).convert('RGB')
+    img_tensor = transform(img).unsqueeze(0).to(device)
+
+    with torch.no_grad():
+        embedding = model(img_tensor)
+        embedding = embedding.cpu().numpy().flatten()
+    return embedding
 
 def extract_embedding(image_path):
     try:
@@ -19,13 +49,14 @@ def extract_embedding(image_path):
 
         faces = face_app.get(img)
         results = []
-
+        cl_emb = extract_clothes_embedding(image_path)
         for face in faces:
             embedding = face.normed_embedding  # Already L2 normalized
             results.append({
-                "embedding": embedding,
+                "face_embedding": embedding,
                 "image_path": image_path,
-                "seen": False
+                "seen": False,
+                "cloth_embedding":cl_emb
             })
 
         return results
@@ -38,7 +69,7 @@ if __name__ == "__main__":
     start_time = time.time()
     
     IMAGE_FOLDER = "./cl_img"
-    OUTPUT_FOLDER = "./grouped_faces_insightface"
+    OUTPUT_FOLDER = "./grouped_faces_clothes"
     SUPPORTED_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
 
     image_paths = [
@@ -47,30 +78,36 @@ if __name__ == "__main__":
         if file.lower().endswith(SUPPORTED_EXTS)
     ]
     
-    all_faces = []
+    all_embedding = []
 
     # Step 1: Extract embeddings from all images
     for path in image_paths:
-        all_faces.extend(extract_embedding(path))
+        all_embedding.extend(extract_embedding(path))
 
     threshold = 0.6  # Adjust based on your tests; InsightFace uses cosine similarity
     person_id = 1
     groups = []
 
     # Step 2: Group similar faces
-    for i in range(len(all_faces)):
-        if all_faces[i]["seen"]:
+    for i in range(len(all_embedding)):
+        if all_embedding[i]["seen"]:
             continue
         group = set()
-        group.add(all_faces[i]["image_path"])
-        all_faces[i]["seen"] = True
+        print(f"processing for img {all_embedding[i]['image_path']}")
+        group.add(all_embedding[i]["image_path"])
+        all_embedding[i]["seen"] = True
 
-        for j in range(i + 1, len(all_faces)):
-            if not all_faces[j]["seen"]:
-                sim = 1 - cosine(all_faces[i]["embedding"], all_faces[j]["embedding"])
-                if sim > threshold:
-                    group.add(all_faces[j]["image_path"])
-                    all_faces[j]["seen"] = True
+        for j in range(i + 1, len(all_embedding)):
+            if not all_embedding[j]["seen"]:
+                sim_face = 1 - cosine(all_embedding[i]["face_embedding"], all_embedding[j]["face_embedding"])
+                sim_cloth = 1 - cosine(all_embedding[i]["cloth_embedding"], all_embedding[j]["cloth_embedding"])
+                sim = (0.8 * sim_face + 0.4 * sim_cloth) / (0.8 + 0.4) 
+                print(f"face sim {sim_face}")
+                print(f"clothe sim {sim_cloth}")
+                if sim_face > 0.7 or sim_cloth > 0.9:
+                    print(f"adding to group")
+                    group.add(all_embedding[j]["image_path"])
+                    all_embedding[j]["seen"] = True
 
         groups.append(group)
 

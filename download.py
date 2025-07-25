@@ -10,7 +10,7 @@ firebase_admin.initialize_app(cred)
 db = firestore.client()
 
 # Step 3: Get Documents from Firestore
-collection_name = 'registrations'
+collection_name = 'registrations-ssc'
 docs = db.collection(collection_name).stream()
 
 # Step 4: Convert Documents to List of Dicts
@@ -33,6 +33,6 @@ df['gclid_count'] = df.groupby('gclid')['gclid'].transform('count')
 df_deduped = df.sort_values('timestamp').drop_duplicates(subset=['gclid'], keep='first')
 
 # Step 9: Save to Excel
-df_deduped.to_excel("cuet_firebase_leads.xlsx", index=False)
+df_deduped.to_excel("ssc_firebase_leads.xlsx", index=False)
 
 print("Excel file saved as firebase_leads.xlsx with 1 row per gclid.")

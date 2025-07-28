@@ -3,9 +3,12 @@ import shutil
 from qdrant_client import QdrantClient
 from collections import defaultdict
 
-def organize_images_by_person_id(output_folder="organized_by_person", collection_name="people_collection"):
+def organize_images_by_person_id(output_folder="organized_by_person-v2", collection_name="gallary-v2", move=False):
     """
-    Reads all points from Qdrant collection and organizes images into folders by person_id
+    Reads all points from Qdrant collection and organizes images into folders by person_id.
+    :param output_folder: Destination folder where images will be organized.
+    :param collection_name: Qdrant collection name.
+    :param move: If True, move files instead of copying.
     """
     # Initialize Qdrant client
     qdrant = QdrantClient(host="localhost", port=6333)
@@ -21,18 +24,16 @@ def organize_images_by_person_id(output_folder="organized_by_person", collection
     # Get all points from the collection
     print("📖 Reading all points from Qdrant collection...")
     
-    # Scroll through all points in the collection
     points_dict = defaultdict(list)
     offset = None
     
     while True:
-        # Get batch of points
         result = qdrant.scroll(
             collection_name=collection_name,
-            limit=100,  # Batch size
+            limit=100,
             offset=offset,
             with_payload=True,
-            with_vectors=False  # We don't need vectors, just payload
+            with_vectors=False
         )
         
         points, next_offset = result
@@ -42,33 +43,28 @@ def organize_images_by_person_id(output_folder="organized_by_person", collection
             
         # Group points by person_id
         for point in points:
-            person_id = point.payload.get('person_id', -1)
+            person_id = point.payload.get('person_id', 'unassigned')
             image_path = point.payload.get('image_path', '')
             
             if image_path and os.path.exists(image_path):
                 points_dict[person_id].append({
                     'id': point.id,
                     'image_path': image_path,
-                    'face_id': point.payload.get('face_id', point.id)
                 })
             else:
-                print(f"⚠️  Image not found: {image_path}")
+                print(f"⚠️ Image not found or invalid path: {image_path}")
         
         offset = next_offset
         if offset is None:
             break
     
-    print(f"📊 Found {sum(len(images) for images in points_dict.values())} images across {len(points_dict)} person groups")
+    total_images = sum(len(images) for images in points_dict.values())
+    print(f"📊 Found {total_images} images across {len(points_dict)} person groups")
     
-    # Create folders and copy images
     copied_count = 0
     
     for person_id, images in points_dict.items():
-        if person_id == -1:
-            folder_name = "unassigned"
-        else:
-            folder_name = f"person_{person_id:03d}"
-        
+        folder_name = f"person_{person_id}"
         person_folder = os.path.join(output_folder, folder_name)
         os.makedirs(person_folder, exist_ok=True)
         
@@ -80,24 +76,28 @@ def organize_images_by_person_id(output_folder="organized_by_person", collection
             destination_path = os.path.join(person_folder, filename)
             
             try:
-                # Handle duplicate filenames by adding face_id
+                # Handle duplicate filenames by adding point ID
                 if os.path.exists(destination_path):
                     name, ext = os.path.splitext(filename)
-                    destination_path = os.path.join(person_folder, f"{name}_face{img_info['face_id']}{ext}")
+                    destination_path = os.path.join(person_folder, f"{name}_{img_info['id']}{ext}")
                 
-                shutil.copy2(source_path, destination_path)
+                if move:
+                    shutil.move(source_path, destination_path)
+                else:
+                    shutil.copy2(source_path, destination_path)
+                
                 copied_count += 1
                 
             except Exception as e:
-                print(f"❌ Error copying {source_path}: {e}")
+                print(f"❌ Error processing {source_path}: {e}")
     
     print(f"✅ Successfully organized {copied_count} images into {len(points_dict)} folders")
     print(f"📂 Output directory: {os.path.abspath(output_folder)}")
 
 
-def get_collection_stats(collection_name="people_collection"):
+def get_collection_stats(collection_name="gallary"):
     """
-    Get statistics about the collection
+    Get statistics about the Qdrant collection.
     """
     qdrant = QdrantClient(host="localhost", port=6333)
     
@@ -105,14 +105,12 @@ def get_collection_stats(collection_name="people_collection"):
         print(f"❌ Collection '{collection_name}' does not exist!")
         return
     
-    # Get collection info
     collection_info = qdrant.get_collection(collection_name)
     total_points = collection_info.points_count
     
     print(f"📊 Collection Statistics:")
     print(f"   Total points: {total_points}")
     
-    # Count by person_id
     person_counts = defaultdict(int)
     offset = None
     
@@ -131,7 +129,7 @@ def get_collection_stats(collection_name="people_collection"):
             break
             
         for point in points:
-            person_id = point.payload.get('person_id', -1)
+            person_id = point.payload.get('person_id', 'unassigned')
             person_counts[person_id] += 1
         
         offset = next_offset
@@ -139,21 +137,17 @@ def get_collection_stats(collection_name="people_collection"):
             break
     
     print(f"   Unique person IDs: {len(person_counts)}")
-    for person_id, count in sorted(person_counts.items()):
-        if person_id == -1:
-            print(f"   Unassigned: {count} images")
-        else:
-            print(f"   Person {person_id}: {count} images")
+    for person_id, count in sorted(person_counts.items(), key=lambda x: -x[1]):
+        print(f"   {person_id}: {count} images")
 
 
 if __name__ == "__main__":
-    # Show collection statistics first
     print("=" * 50)
-    get_collection_stats()
+    get_collection_stats(collection_name="gallary")
     print("=" * 50)
     
-    # Organize images
     organize_images_by_person_id(
-        output_folder="organized_by_person_id",
-        collection_name="people_collection"
+        output_folder="organized_by_person_id-v2",
+        collection_name="gallary-v2",
+        move=False  # Change to True if you want to move instead of copy
     )

@@ -3,6 +3,7 @@ import shutil
 import time
 import cv2
 import numpy as np
+from scipy.spatial.distance import cosine
 from insightface.app import FaceAnalysis
 import torch
 from PIL import Image
@@ -10,11 +11,10 @@ from transformers import AutoProcessor, AutoModel
 from collections import deque
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
-    VectorParams, Distance, PointStruct, SearchRequest, NamedVector
+    VectorParams, Distance, PointStruct
 )
 
-
-class HybridFaceGroupingQdrant:
+class HybridFaceGrouping:
     def __init__(self, host="localhost", port=6333):
         # Initialize models
         self.face_app = FaceAnalysis(name='buffalo_l', providers=['CPUExecutionProvider'])
@@ -28,11 +28,11 @@ class HybridFaceGroupingQdrant:
         self.qdrant = QdrantClient(host=host, port=port)
         self.collection_name = "hybrid_people_collection"
         self._setup_collection()
-    
+        
     def _setup_collection(self):
         if self.qdrant.collection_exists(self.collection_name):
             self.qdrant.delete_collection(self.collection_name)
-        
+            
         self.qdrant.create_collection(
             collection_name=self.collection_name,
             vectors_config={
@@ -40,23 +40,27 @@ class HybridFaceGroupingQdrant:
                 "clothing": VectorParams(size=512, distance=Distance.COSINE)
             }
         )
-
+    
     def extract_face_embedding(self, image_path):
+        """Extract face embedding from image"""
         img = cv2.imread(image_path)
         if img is None:
             return None
         faces = self.face_app.get(img)
         return faces[0].normed_embedding if faces else None
-
+    
     def extract_clothing_embedding(self, image_path):
+        """Extract clothing embedding from image"""
         img = Image.open(image_path).convert('RGB')
         inputs = self.fashion_processor(images=img, return_tensors="pt").to(self.device)
         with torch.no_grad():
             emb = self.fashion_model.get_image_features(**inputs)
             return emb[0] / emb[0].norm()
-
+    
     def index_images(self, folder_path):
+        """Index all images and store in both Qdrant and local list"""
         print("🔍 Indexing images...")
+        
         items = []
         point_id = 0
         
@@ -73,6 +77,7 @@ class HybridFaceGroupingQdrant:
             
             clothing_emb = self.extract_clothing_embedding(image_path)
             
+            # Store in Qdrant for efficient similarity search
             self.qdrant.upsert(
                 collection_name=self.collection_name,
                 points=[
@@ -90,6 +95,7 @@ class HybridFaceGroupingQdrant:
                 ]
             )
             
+            # Also keep in memory for your superior grouping algorithm
             items.append({
                 'id': point_id,
                 'path': image_path,
@@ -100,70 +106,27 @@ class HybridFaceGroupingQdrant:
             })
             
             point_id += 1
-        
+            
         print(f"✅ Indexed {len(items)} images with faces")
         return items
-
-    def find_similar_candidates(self, item, face_threshold=0.65, clothing_threshold=0.5, limit=50):
-        """
-        Find similar candidates using separate searches for face and clothing,
-        then combine results with manual scoring
-        """
-        # Search by face similarity
-        face_results = self.qdrant.search(
+    
+    def find_similar_candidates(self, item, face_threshold=0.7, limit=50):
+        """Use Qdrant to efficiently find potential similar faces"""
+        candidates = self.qdrant.query_points(
             collection_name=self.collection_name,
-            query_vector=NamedVector(name="face", vector=item['face'].tolist()),
+            query=item['face'].tolist(),
+            using="face",
             limit=limit,
-            score_threshold=face_threshold
+            score_threshold=face_threshold  # Lower threshold to catch more candidates
         )
         
-        # Search by clothing similarity  
-        clothing_results = self.qdrant.search(
-            collection_name=self.collection_name,
-            query_vector=NamedVector(name="clothing", vector=item['cloth'].cpu().tolist()),
-            limit=limit,
-            score_threshold=clothing_threshold
-        )
-        
-        # Combine results with hybrid scoring
-        candidates = {}
-        
-        # Add face matches with higher weight
-        for result in face_results:
-            if result.id != item['id']:
-                candidates[result.id] = {
-                    'id': result.id,
-                    'face_score': result.score,
-                    'clothing_score': 0.0,
-                    'hybrid_score': result.score * 0.7
-                }
-        
-        # Add clothing matches and update hybrid scores
-        for result in clothing_results:
-            if result.id != item['id']:
-                if result.id in candidates:
-                    candidates[result.id]['clothing_score'] = result.score
-                    candidates[result.id]['hybrid_score'] = (
-                        candidates[result.id]['face_score'] * 0.7 + 
-                        result.score * 0.3
-                    )
-                else:
-                    candidates[result.id] = {
-                        'id': result.id,
-                        'face_score': 0.0,
-                        'clothing_score': result.score,
-                        'hybrid_score': result.score * 0.3
-                    }
-        
-        # Sort by hybrid score and return candidate IDs
-        sorted_candidates = sorted(candidates.values(), key=lambda x: x['hybrid_score'], reverse=True)
-        return [c['id'] for c in sorted_candidates]
-
-    def group_images_qdrant_only(self, items, face_threshold=0.65, clothing_threshold=0.5, verbose=True):
+        return [point.id for point in candidates.points if point.id != item['id']]
+    
+    def group_images_hybrid(self, items, face_th=0.7, cloth_th=0.85, verbose=True):
         """
-        Group images using Qdrant similarity with separate face and clothing searches
+        Your superior grouping logic enhanced with vector DB for efficiency
         """
-        print(f"🎯 Starting Qdrant-only grouping with face_threshold={face_threshold}, clothing_threshold={clothing_threshold}")
+        print(f"🎯 Starting hybrid grouping with face_th={face_th}, cloth_th={cloth_th}")
         groups = []
         
         for idx, item in enumerate(items):
@@ -180,31 +143,40 @@ class HybridFaceGroupingQdrant:
             while queue:
                 current = queue.popleft()
                 
-                candidate_ids = self.find_similar_candidates(
-                    current, 
-                    face_threshold=face_threshold, 
-                    clothing_threshold=clothing_threshold, 
-                    limit=50
-                )
+                # Use vector DB to get potential candidates efficiently
+                candidate_ids = self.find_similar_candidates(current, face_threshold=0.5)
                 
                 for candidate_id in candidate_ids:
+                    # Find the candidate in our items list
                     other = next((x for x in items if x['id'] == candidate_id), None)
                     if other is None or other['assigned']:
                         continue
                     
-                    other['assigned'] = True
-                    group.append(other['path'])
-                    queue.append(other)
+                    # Calculate similarities
+                    face_sim = 1 - cosine(current['face'], other['face'])
+                    cloth_sim = float((current['cloth'] @ other['cloth']).cpu())
                     
                     if verbose:
-                        print(f"     ✅ MATCHED via Qdrant hybrid search: {other['filename']}")
+                        print(f"  📊 {current['filename']} vs {other['filename']}")
+                        print(f"     face: {face_sim:.3f}, cloth: {cloth_sim:.3f}")
+                    
+                    # Your superior matching logic
+                    if face_sim >= face_th or (face_sim >= 0.4 and cloth_sim >= cloth_th):
+                        other['assigned'] = True
+                        group.append(other['path'])
+                        queue.append(other)
+                        
+                        if verbose:
+                            condition = "high face sim" if face_sim >= face_th else "face+cloth match"
+                            print(f"     ✅ MATCHED ({condition})")
             
             groups.append(group)
             print(f"👥 Group {len(groups)}: {len(group)} images")
         
         return groups
-
+    
     def organize_groups(self, groups, output_folder):
+        """Organize groups into folders"""
         print("📁 Organizing images...")
         os.makedirs(output_folder, exist_ok=True)
         
@@ -218,19 +190,24 @@ class HybridFaceGroupingQdrant:
             print(f"📂 person_{idx:03d}: {len(group)} images")
         
         print(f"✅ Created {len(groups)} person groups")
-
+    
     def process_folder(self, input_folder, output_folder="hybrid_grouped", 
-                      face_threshold=0.65, clothing_threshold=0.5, verbose=True):
-        print("🚀 Starting Qdrant-only hybrid face grouping pipeline...")
+                      face_th=0.7, cloth_th=0.85, verbose=True):
+        """Complete pipeline combining vector DB efficiency with your superior logic"""
+        print("🚀 Starting hybrid face grouping pipeline...")
         print(f"📂 Input: {input_folder}")
         print(f"📂 Output: {output_folder}")
-        print(f"🎯 Face threshold: {face_threshold}")
-        print(f"🎯 Clothing threshold: {clothing_threshold}")
+        print(f"🎯 Thresholds: face={face_th}, cloth={cloth_th}")
         
         start_time = time.time()
         
+        # Step 1: Index images (stores in both Qdrant and memory)
         items = self.index_images(input_folder)
-        groups = self.group_images_qdrant_only(items, face_threshold, clothing_threshold, verbose)
+        
+        # Step 2: Apply your superior grouping algorithm with vector DB acceleration
+        groups = self.group_images_hybrid(items, face_th, cloth_th, verbose)
+        
+        # Step 3: Organize into folders
         self.organize_groups(groups, output_folder)
         
         total_time = time.time() - start_time
@@ -239,15 +216,40 @@ class HybridFaceGroupingQdrant:
         
         return groups
 
+    def analyze_groups(self, groups):
+        """Analyze the quality of grouping"""
+        total_images = sum(len(group) for group in groups)
+        single_image_groups = sum(1 for group in groups if len(group) == 1)
+        
+        print(f"\n📈 Grouping Analysis:")
+        print(f"   Total groups: {len(groups)}")
+        print(f"   Total images: {total_images}")
+        print(f"   Single-image groups: {single_image_groups}")
+        print(f"   Multi-image groups: {len(groups) - single_image_groups}")
+        
+        group_sizes = [len(group) for group in groups]
+        print(f"   Largest group: {max(group_sizes)} images")
+        print(f"   Average group size: {sum(group_sizes) / len(group_sizes):.1f}")
+        
+        size_distribution = {}
+        for size in group_sizes:
+            size_distribution[size] = size_distribution.get(size, 0) + 1
+        
+        print(f"   Size distribution: {dict(sorted(size_distribution.items()))}")
 
-# 🔧 Usage Example
+
+# 🔧 Usage Examples
 if __name__ == "__main__":
-    grouper = HybridFaceGroupingQdrant()
+    grouper = HybridFaceGrouping()
     
+    # Your preferred settings
     groups = grouper.process_folder(
         input_folder="cropped_people",
-        output_folder="qdrant_hybrid_grouped_faces",
-        face_threshold=0.7,      # Threshold for face similarity
-        clothing_threshold=0.85,   # Threshold for clothing similarity  
-        verbose=True
+        output_folder="hybrid_grouped_faces",
+        face_th=0.7,     # Your face threshold
+        cloth_th=0.85,   # Your cloth threshold  
+        verbose=True     # Show detailed matching process
     )
+    
+    # Analyze the results
+    grouper.analyze_groups(groups)

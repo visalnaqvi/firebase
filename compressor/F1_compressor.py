@@ -1,33 +1,33 @@
 from PIL import Image, ExifTags
 import os
-import psycopg2
-from psycopg2.extras import execute_values
+# import psycopg2
+# from psycopg2.extras import execute_values
 
-DB_CONFIG = {
-    "dbname": "postgres",
-    "user": "postgres",
-    "password": "admin",
-    "host": "localhost",
-    "port": "5432"
-}
+# DB_CONFIG = {
+#     "dbname": "postgres",
+#     "user": "postgres",
+#     "password": "admin",
+#     "host": "localhost",
+#     "port": "5432"
+# }
 
-def get_db_connection():
-    return psycopg2.connect(**DB_CONFIG)
+# def get_db_connection():
+#     return psycopg2.connect(**DB_CONFIG)
 
-def insert_images_batch(records):
-    if not records:
-        return
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    query = """
-        INSERT INTO images_to_process (image_path, is_emb_extracted, is_assigned)
-        VALUES %s
-    """
-    execute_values(cursor, query, records)
-    conn.commit()
-    cursor.close()
-    conn.close()
-    print(f"✅ Inserted {len(records)} records in batch")
+# def insert_images_batch(records):
+#     if not records:
+#         return
+#     conn = get_db_connection()
+#     cursor = conn.cursor()
+#     query = """
+#         INSERT INTO images_to_process (image_path, is_emb_extracted, is_assigned)
+#         VALUES %s
+#     """
+#     execute_values(cursor, query, records)
+#     conn.commit()
+#     cursor.close()
+#     conn.close()
+#     print(f"✅ Inserted {len(records)} records in batch")
 
 def correct_image_orientation(img):
     try:
@@ -50,7 +50,7 @@ def correct_image_orientation(img):
         print("Warning: Could not auto-rotate image due to:", e)
     return img
 
-def compress_image(input_path, output_path, max_width=3000, target_size_mb=1.5, quality_step=5):
+def compress_image(input_path, output_path, max_width=3000, target_size_mb=1, quality_step=5):
     img = Image.open(input_path)
     img = correct_image_orientation(img)
     original_size = os.path.getsize(input_path) / (1024 * 1024)
@@ -82,14 +82,14 @@ def compress_all_images(input_folder, output_folder):
         if filename.lower().endswith(supported_ext):
             input_path = os.path.join(input_folder, filename)
             output_path = os.path.join(output_folder, filename)
-            compress_image(input_path, output_path, max_width=1000)
+            compress_image(input_path, output_path, max_width=3000)
 
             batch_records.append((output_path, False, False))
 
-    insert_images_batch(batch_records)
+    # insert_images_batch(batch_records)
 
 if __name__ == "__main__":
-    input_folder = "img"               
+    input_folder = "ds"               
     output_folder = "compressed_img" 
     compress_all_images(input_folder, output_folder)
     print("\n✅ All images compressed and inserted in batch")

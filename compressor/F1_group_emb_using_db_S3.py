@@ -32,11 +32,22 @@ class HybridFaceGrouping:
         self.qdrant = QdrantClient(host=host, port=port)
         self.collection_name = "hybrid_people_collection"
 
-    # ✅ Fetch items from DB
-    def fetch_items_from_db(self):
+    def fetch_groups_from_db(self):
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT id, image_path, filename, face_id, person_id, face_emb, clothing_emb, assigned FROM ready_to_group")
+        cursor.execute("SELECT id FROM groups where status = %s" , ("warm"))
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        items = []
+        for row in rows:
+            items.append(row["id"])
+        return items
+    def fetch_items_from_db(self , group_id):
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, person_id, face_emb, clothing_emb, assigned FROM faces where group_id = %s" , (group_id))
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
@@ -45,9 +56,6 @@ class HybridFaceGrouping:
         for row in rows:
             items.append({
                 "id": row["id"],  # Qdrant point ID
-                "image_path": row["image_path"],
-                "filename": row["filename"],
-                "face_id": row["face_id"],
                 "person_id": row["person_id"],
                 "face": np.array(row["face_emb"], dtype=np.float32),
                 "cloth": torch.tensor(row["clothing_emb"], dtype=torch.float32),
@@ -120,7 +128,7 @@ class HybridFaceGrouping:
     def update_person_ids_in_db(self, updates):
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.executemany("UPDATE ready_to_group SET person_id = %s WHERE id = %s", updates)
+        cursor.executemany("UPDATE faces SET person_id = %s WHERE id = %s", updates)
         conn.commit()
         cursor.close()
         conn.close()
@@ -138,5 +146,7 @@ class HybridFaceGrouping:
 # 🔧 Usage Example
 if __name__ == "__main__":
     grouper = HybridFaceGrouping()
-    items = grouper.fetch_items_from_db()
-    groups = grouper.group_and_assign_person_ids(items, face_th=0.7, cloth_th=0.85)
+    groups = grouper.fetch_groups_from_db()
+    for id in groups:
+        items = grouper.fetch_items_from_db(id)
+        grouper.group_and_assign_person_ids(items, face_th=0.7, cloth_th=0.85)

@@ -24,28 +24,40 @@ DB_CONFIG = {
 def get_db_connection():
     return psycopg2.connect(**DB_CONFIG)
 
-def fetch_unprocessed_images():
+def fetch_unprocessed_images(group_id):
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("SELECT id, image_path FROM images_to_process")
+    # Use parameterized query to avoid SQL injection
+    cur.execute("SELECT id, location FROM images WHERE status = %s AND group_id = %s", ('hot', group_id))
     rows = cur.fetchall()
     cur.close()
     conn.close()
     return rows  # [(id, image_path), ...]
 
-def insert_ready_to_group_batch(records):
+def fetch_hot_groups():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    # Use parameterized query to avoid SQL injection
+    cur.execute("SELECT id FROM groups WHERE status = %s", ('hot'))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows 
+
+
+def insert_ready_to_group_batch(records , id):
     if not records:
         return
     conn = get_db_connection()
     cur = conn.cursor()
     query = """
-    INSERT INTO ready_to_group (id, image_path, filename, face_id, face_emb, clothing_emb, assigned, image_id, person_id , cropped_img_byte,face_thumb_bytes )
+    INSERT INTO faces (id, face_emb, clothing_emb, assigned, image_id, group_id, person_id , cropped_img_byte,face_thumb_bytes )
     VALUES %s
     """
     values = [
-        (r['id'], r['image_path'], r['filename'], r['face_id'],
+        (r['id'],
          r['face_emb'].tolist(), r['clothing_emb'].cpu().tolist(),
-         r['assigned'], r['image_id'], r['person_id'] , r['cropped_img_byte '] , r['face_thumb_bytes'])
+         r['assigned'], r['image_id'],r[id], r['person_id'] , r['cropped_img_byte'] , r['face_thumb_bytes'])
         for r in records
     ]
     execute_values(cur, query, values)
@@ -53,13 +65,20 @@ def insert_ready_to_group_batch(records):
     cur.close()
     conn.close()
 
-def mark_images_processed_batch(image_ids):
+def mark_images_processed_batch(image_ids, group_id):
     if not image_ids:
         return
     conn = get_db_connection()
     cur = conn.cursor()
-    query = "UPDATE images_to_process SET is_emb_extracted = true WHERE id = ANY(%s)"
-    cur.execute(query, (image_ids,))
+    
+    # ✅ Correct way to use ANY with list/array
+    query = "UPDATE images SET status = 'warm' WHERE id = ANY(%s)"
+    cur.execute(query, (image_ids,))  # image_ids must be a list or tuple
+
+    # ✅ Parameter must be passed as a 1-element tuple
+    query_g = "UPDATE groups SET status = 'warm' WHERE id = %s"
+    cur.execute(query_g, (group_id,))  # wrap single value in tuple
+
     conn.commit()
     cur.close()
     conn.close()
@@ -139,7 +158,7 @@ class HybridFaceIndexer:
                     continue
 
                 clothing_emb = self.extract_clothing_embedding(person_crop)
-                cropped_img_byte  = self.image_to_bytes(person_crop)
+                cropped_img_byte = self.image_to_bytes(person_crop)
                 face_thumb_bytes = None
                 if len(faces) == 1:
                     f = faces[0]
@@ -149,9 +168,7 @@ class HybridFaceIndexer:
                         face_thumb_bytes = self.image_to_bytes(face_crop)
                 for face in faces:
                     face_emb = face.normed_embedding
-                    point_id = str(uuid.uuid4())
-                    face_id = str(uuid.uuid4())
-                  
+                    point_id = str(uuid.uuid4())               
 
                     # ✅ Insert into Qdrant
                     self.qdrant.upsert(
@@ -164,8 +181,6 @@ class HybridFaceIndexer:
                                     "clothing": clothing_emb.cpu().tolist()
                                 },
                                 payload={
-                                    "image_path": image_path,
-                                    "face_id": face_id,
                                     "person_id": -1,
                                     "image_id": image_id
                                 }
@@ -178,13 +193,12 @@ class HybridFaceIndexer:
                         "id": point_id,
                         "image_path": image_path,
                         "filename": image_path,
-                        "face_id": face_id,
                         "face_emb": face_emb,
                         "clothing_emb": clothing_emb,
                         "assigned": False,
                         "image_id": image_id,
                         "person_id": -1,
-                        "cropped_img_byte ":cropped_img_byte ,
+                        "cropped_img_byte":cropped_img_byte,
                         "face_thumb_bytes":face_thumb_bytes
                     })
 
@@ -196,24 +210,24 @@ if __name__ == "__main__":
     os.makedirs(cropped_dir, exist_ok=True)
 
     indexer = HybridFaceIndexer()
+    groups = [row[0] for row in fetch_hot_groups()]
+    for id in groups:
+        unprocessed = fetch_unprocessed_images(id)
+        print(f"Found {len(unprocessed)} unprocessed images")
 
-    unprocessed = fetch_unprocessed_images()
-    print(f"Found {len(unprocessed)} unprocessed images")
+        all_records = []
+        processed_image_ids = []
 
-    all_records = []
-    processed_image_ids = []
+        for id, location in unprocessed:
+            print(f"\n🔍 Processing {location}")
+            records = indexer.process_image(id, location, yolo_model, cropped_dir)
+            if records:
+                all_records.extend(records)
+                processed_image_ids.append(id)
 
-    for id, image_path in unprocessed:
-        print(f"\n🔍 Processing {image_path}")
-        records = indexer.process_image(id, image_path, yolo_model, cropped_dir)
-        if records:
-            all_records.extend(records)
-            processed_image_ids.append(id)
+        if all_records:
+            insert_ready_to_group_batch(all_records)
+        if processed_image_ids:
+            mark_images_processed_batch(processed_image_ids , id)
 
-    # ✅ Bulk insert
-    if all_records:
-        insert_ready_to_group_batch(all_records)
-    if processed_image_ids:
-        mark_images_processed_batch(processed_image_ids)
-
-    print(f"✅ Process completed: {len(all_records)} faces indexed & stored")
+        print(f"✅ Process completed: {len(all_records)} faces indexed & stored")

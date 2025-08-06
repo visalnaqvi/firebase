@@ -12,17 +12,16 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import VectorParams, Distance, PointStruct
 from psycopg2.extras import execute_values
 import numpy as np
-# ✅ PostgreSQL Config
-DB_CONFIG = {
-    "dbname": "postgres",
-    "user": "postgres",
-    "password": "admin",
-    "host": "localhost",
-    "port": "5432"
-}
 
 def get_db_connection():
-    return psycopg2.connect(**DB_CONFIG)
+    return psycopg2.connect(
+        host="ballast.proxy.rlwy.net",
+        port="56193",
+        dbname="railway",
+        user="postgres",
+        password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
+        # or use os.environ.get("POSTGRES_URL") if using env var
+    )
 
 def fetch_unprocessed_images(group_id):
     print(f"🔃Fetching Images id and image_byte with statis as warm for Gorup {id}")

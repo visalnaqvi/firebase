@@ -25,7 +25,14 @@ DB_CONFIG = {
 }
 
 def get_db_connection():
-    return psycopg2.connect(**DB_CONFIG, cursor_factory=DictCursor)
+    return psycopg2.connect(
+        host="ballast.proxy.rlwy.net",
+        port="56193",
+        dbname="railway",
+        user="postgres",
+        password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
+        # or use os.environ.get("POSTGRES_URL") if using env var
+    )
 
 class HybridFaceGrouping:
     def __init__(self, host="localhost", port=6333):

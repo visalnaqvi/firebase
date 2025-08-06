@@ -4,11 +4,11 @@ from datetime import datetime, timedelta
 
 def get_db_connection():
     return psycopg2.connect(
-        host="your_host",
-        port="your_port",
-        dbname="your_db",
-        user="your_user",
-        password="your_password"
+        host="ballast.proxy.rlwy.net",
+        port="56193",
+        dbname="railway",
+        user="postgres",
+        password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
         # or use os.environ.get("POSTGRES_URL") if using env var
     )
 

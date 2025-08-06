@@ -20,11 +20,11 @@ def main():
         print("✅ Connected to PostgreSQL")
 
         print("🔃 Getting groups with heating status")
-        cur.execute("SELECT group_id FROM groups WHERE status = 'heating'")
-        heating_groups = [row['group_id'] for row in cur.fetchall()]
+        cur.execute("SELECT id FROM groups WHERE status = 'heating'")
+        heating_groups = [row['id'] for row in cur.fetchall()]
         print(f"✅ Got {len(heating_groups)} heating groups")
         heated_groups = []
-        one_hour_ago = datetime.utcnow() - timedelta(hours=1)
+        one_hour_ago = datetime.utcnow() - timedelta(minutes=1)
 
 
         for group_id in heating_groups:
@@ -55,7 +55,7 @@ def main():
             print(f"✅ Got {total_images} images for {group_id} group with size {total_size}")
             print(f"🔃 Got {total_images} images for {group_id} group with size {total_size}")
             cur.execute(
-                "UPDATE groups SET status = 'hot', total_images = %s, total_size = %s WHERE group_id = %s",
+                "UPDATE groups SET status = 'hot', total_images = %s, total_size = %s WHERE id = %s",
                 (total_images, total_size, group_id)
             )
             print(f"✅Updated group status")

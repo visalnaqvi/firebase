@@ -1,8 +1,6 @@
 key.json
 /compressor/venv
-/compressor/featureenv
 /compressor/yolov8n.pt
 /compressor/yolov8x.pt
-/compressor/fastreid
 /compressor/node_modules
 /compressor/firebase-key.json

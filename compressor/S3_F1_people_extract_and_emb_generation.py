@@ -11,7 +11,7 @@ from transformers import AutoProcessor, AutoModel
 from qdrant_client import QdrantClient
 from qdrant_client.models import VectorParams, Distance, PointStruct
 from psycopg2.extras import execute_values
-import cv2
+import numpy as np
 # ✅ PostgreSQL Config
 DB_CONFIG = {
     "dbname": "postgres",
@@ -25,20 +25,22 @@ def get_db_connection():
     return psycopg2.connect(**DB_CONFIG)
 
 def fetch_unprocessed_images(group_id):
+    print(f"🔃Fetching Images id and image_byte with statis as warm for Gorup {id}")
     conn = get_db_connection()
     cur = conn.cursor()
     # Use parameterized query to avoid SQL injection
-    cur.execute("SELECT id, location FROM images WHERE status = %s AND group_id = %s", ('hot', group_id))
+    cur.execute("SELECT id , image_byte FROM images WHERE status = %s AND group_id = %s", ('warm', group_id))
     rows = cur.fetchall()
     cur.close()
     conn.close()
     return rows  # [(id, image_path), ...]
 
-def fetch_hot_groups():
+def fetch_warm_groups():
+    print("🔃 Fetching Warm groups from database to extract embeddings")
     conn = get_db_connection()
     cur = conn.cursor()
     # Use parameterized query to avoid SQL injection
-    cur.execute("SELECT id FROM groups WHERE status = %s", ('hot'))
+    cur.execute("SELECT id FROM groups WHERE status = %s", ('warm'))
     rows = cur.fetchall()
     cur.close()
     conn.close()
@@ -46,12 +48,13 @@ def fetch_hot_groups():
 
 
 def insert_ready_to_group_batch(records , id):
+    print(f"🔃 Inserting detected face into postgress db for group {id}")
     if not records:
         return
     conn = get_db_connection()
     cur = conn.cursor()
     query = """
-    INSERT INTO faces (id, face_emb, clothing_emb, assigned, image_id, group_id, person_id , cropped_img_byte,face_thumb_bytes )
+    INSERT INTO faces (id, face_emb, clothing_emb, assigned, image_id, group_id, person_id , cropped_img_byte , face_thumb_bytes )
     VALUES %s
     """
     values = [
@@ -61,23 +64,19 @@ def insert_ready_to_group_batch(records , id):
         for r in records
     ]
     execute_values(cur, query, values)
+    print(f"✅ Inserted detected face into postgress db for group {id}")
     conn.commit()
     cur.close()
     conn.close()
 
-def mark_images_processed_batch(image_ids, group_id):
+def mark_images_processed_batch(image_ids):
     if not image_ids:
         return
     conn = get_db_connection()
     cur = conn.cursor()
     
-    # ✅ Correct way to use ANY with list/array
-    query = "UPDATE images SET status = 'warm' WHERE id = ANY(%s)"
-    cur.execute(query, (image_ids,))  # image_ids must be a list or tuple
-
-    # ✅ Parameter must be passed as a 1-element tuple
-    query_g = "UPDATE groups SET status = 'warm' WHERE id = %s"
-    cur.execute(query_g, (group_id,))  # wrap single value in tuple
+    query = "UPDATE images SET status = 'warmed' WHERE id = ANY(%s)"
+    cur.execute(query, (image_ids,))  
 
     conn.commit()
     cur.close()
@@ -100,6 +99,7 @@ class HybridFaceIndexer:
         self._setup_collection()
 
     def _setup_collection(self):
+        print(f"🔃 Setting up qudrant collection")
         if self.qdrant.collection_exists(self.collection_name):
             self.qdrant.delete_collection(self.collection_name)
 
@@ -110,6 +110,7 @@ class HybridFaceIndexer:
                 "clothing": VectorParams(size=512, distance=Distance.COSINE)
             }
         )
+        print(f"✅ Qdrant Setup done")
 
     def extract_faces(self, img):
         return self.face_app.get(img)
@@ -135,10 +136,12 @@ class HybridFaceIndexer:
         if not success:
             raise ValueError("Could not encode image")
         return buffer.tobytes()
-    def process_image(self, image_id, image_path, yolo_model, cropped_dir):
-        img = cv2.imread(image_path)
+    def process_image(self, image_id,image_byte_3k, yolo_model):
+        nparr = np.frombuffer(image_byte_3k, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        print(f"🔃Processing Image {image_id}")
         if img is None:
-            print(f"❌ Failed to read image: {image_path}")
+            print(f"❌ Failed to read image: {image_id}")
             return []
 
         results = yolo_model(img)[0]
@@ -152,13 +155,18 @@ class HybridFaceIndexer:
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
                 person_crop = img[y1:y2, x1:x2]
                 person_count += 1
-
+                print(f"🔃Extracting face from Image {image_id}")
                 faces = self.extract_faces(person_crop)
                 if not faces:
                     continue
-
+                print(f"✅Extracted {len(faces)} faces from Image {image_id}")   
+                print(f"🔃Extracting clothing emb from Image {image_id}") 
                 clothing_emb = self.extract_clothing_embedding(person_crop)
+                print(f"✅Extracted clothing emb from Image {image_id}")   
+                print(f"🔃Extracting cropped image bytes from Image {image_id}") 
                 cropped_img_byte = self.image_to_bytes(person_crop)
+                print(f"✅Extracted cropped image bytes Image {image_id}")   
+                print(f"🔃Extracting thumbnail image bytes from Image {image_id}") 
                 face_thumb_bytes = None
                 if len(faces) == 1:
                     f = faces[0]
@@ -166,11 +174,14 @@ class HybridFaceIndexer:
                     face_crop = person_crop[y1_f:y2_f, x1_f:x2_f]
                     if face_crop.size > 0:
                         face_thumb_bytes = self.image_to_bytes(face_crop)
+                print(f"✅Extracted thumbnail image bytes Image {image_id}")   
+                print(f"🔃Extracting each face embedding from Image {image_id}")
                 for face in faces:
                     face_emb = face.normed_embedding
                     point_id = str(uuid.uuid4())               
 
-                    # ✅ Insert into Qdrant
+                    print(f"✅Extracted each face embedding Image {image_id}")   
+                    print(f"🔃 Inserting Embedding into qdrant db with point id as {point_id} for Image {image_id}")
                     self.qdrant.upsert(
                         collection_name=self.collection_name,
                         points=[
@@ -188,11 +199,11 @@ class HybridFaceIndexer:
                         ]
                     )
 
-                    # ✅ Add record for DB
+                    print(f"✅Inserted Embedding into qdrant db with point id as {point_id} for Image {image_id}")   
+                    print(f"🔃 Inserting Details into records with id as {point_id} for Image {image_id}")
+
                     records.append({
                         "id": point_id,
-                        "image_path": image_path,
-                        "filename": image_path,
                         "face_emb": face_emb,
                         "clothing_emb": clothing_emb,
                         "assigned": False,
@@ -201,29 +212,30 @@ class HybridFaceIndexer:
                         "cropped_img_byte":cropped_img_byte,
                         "face_thumb_bytes":face_thumb_bytes
                     })
-
+        print(f"✅ All Face proccessing finished for image {image_id}")
         return records
 
 if __name__ == "__main__":
     yolo_model = YOLO("yolov8x.pt")
-    cropped_dir = "cropped_people"
-    os.makedirs(cropped_dir, exist_ok=True)
 
     indexer = HybridFaceIndexer()
-    groups = [row[0] for row in fetch_hot_groups()]
+    groups = [row[0] for row in fetch_warm_groups()]
+    print(f"ℹFound {len(groups)} warm groups")
     for id in groups:
+        print(f"🔃 Processing group {id}")
         unprocessed = fetch_unprocessed_images(id)
-        print(f"Found {len(unprocessed)} unprocessed images")
+        print(f"ℹFound {len(unprocessed)} unprocessed images")
 
         all_records = []
         processed_image_ids = []
 
-        for id, location in unprocessed:
-            print(f"\n🔍 Processing {location}")
-            records = indexer.process_image(id, location, yolo_model, cropped_dir)
+        for id,image_byte in unprocessed:
+            print(f"\n🔍 Processing {id}")
+            records = indexer.process_image(id,image_byte, yolo_model)
             if records:
+                print(f"✅ Got All Face Records for image {id} extending into all records")
                 all_records.extend(records)
-                processed_image_ids.append(id)
+                # processed_image_ids.append(id)
 
         if all_records:
             insert_ready_to_group_batch(all_records)

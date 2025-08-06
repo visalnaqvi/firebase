@@ -35,7 +35,8 @@ class HybridFaceGrouping:
     def fetch_groups_from_db(self):
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT id FROM groups where status = %s" , ("warm"))
+        print(f"🔃 Fetching groups with status warmed")
+        cursor.execute("SELECT id FROM groups where status = %s" , ("warmed"))
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
@@ -43,9 +44,11 @@ class HybridFaceGrouping:
         items = []
         for row in rows:
             items.append(row["id"])
+        print(f"✅ Got {len(items)} groups with warmed status")
         return items
     def fetch_items_from_db(self , group_id):
         conn = get_db_connection()
+        print(f"🔃 Fetching face with for group {group_id}")
         cursor = conn.cursor()
         cursor.execute("SELECT id, person_id, face_emb, clothing_emb, assigned FROM faces where group_id = %s" , (group_id))
         rows = cursor.fetchall()
@@ -61,6 +64,7 @@ class HybridFaceGrouping:
                 "cloth": torch.tensor(row["clothing_emb"], dtype=torch.float32),
                 "assigned": row["assigned"]
             })
+        print(f"✅ Got {len(items)} face for group {group_id}")
         return items
 
     def find_similar_candidates(self, item, face_threshold=0.7, limit=50):
@@ -128,7 +132,7 @@ class HybridFaceGrouping:
     def update_person_ids_in_db(self, updates):
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.executemany("UPDATE faces SET person_id = %s WHERE id = %s", updates)
+        cursor.executemany("UPDATE faces SET person_id = %s and assigned=TRUE WHERE id = %s", updates)
         conn.commit()
         cursor.close()
         conn.close()

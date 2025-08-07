@@ -37,7 +37,6 @@ def get_db_connection():
 class HybridFaceGrouping:
     def __init__(self, host="localhost", port=6333):
         self.qdrant = QdrantClient(host=host, port=port)
-        self.collection_name = "hybrid_people_collection"
 
     def fetch_groups_from_db(self):
         conn = get_db_connection()
@@ -64,7 +63,7 @@ class HybridFaceGrouping:
 
         point_ids = [row["id"] for row in rows]
         qdrant_points = self.qdrant.retrieve(
-            collection_name=self.collection_name,
+            collection_name=group_id,
             ids=point_ids,
             with_payload=True,
             with_vectors=True
@@ -86,15 +85,15 @@ class HybridFaceGrouping:
                 "person_id": row["person_id"],
                 "face": q_point.vectors.get("face") if q_point.vectors else None,
                 "cloth": q_point.vectors.get("cloth") if q_point.vectors else None,
-                "assigned": row["person_id"] != -1
+                "assigned": row["person_id"] != None
             })
 
         print(f"✅ Got {len(items)} face(s) for group {group_id}")
         return items
 
-    def find_similar_candidates(self, item, face_threshold=0.7, limit=50):
+    def find_similar_candidates(self, item,group_id ,  face_threshold=0.7, limit=50 , ):
         candidates = self.qdrant.query_points(
-            collection_name=self.collection_name,
+            collection_name=group_id,
             query=item['face'].tolist(),
             using="face",
             limit=limit,
@@ -102,7 +101,7 @@ class HybridFaceGrouping:
         )
         return [point.id for point in candidates.points if point.id != item['id']]
 
-    def group_and_assign_person_ids(self, items, face_th=0.7, cloth_th=0.85):
+    def group_and_assign_person_ids(self, items, g_id , face_th=0.7, cloth_th=0.85 ):
         print("🎯 Starting grouping and assigning person IDs")
         groups = []
         updates = []
@@ -122,7 +121,7 @@ class HybridFaceGrouping:
 
             while queue:
                 current = queue.popleft()
-                candidate_ids = self.find_similar_candidates(current, face_threshold=0.5)
+                candidate_ids = self.find_similar_candidates(current,g_id , face_threshold=0.5 )
 
                 for candidate_id in candidate_ids:
                     other = next((x for x in items if x['id'] == candidate_id), None)
@@ -167,4 +166,4 @@ if __name__ == "__main__":
     groups = grouper.fetch_groups_from_db()
     for id in groups:
         items = grouper.fetch_items_from_db(id)
-        grouper.group_and_assign_person_ids(items, face_th=0.7, cloth_th=0.85)
+        grouper.group_and_assign_person_ids(items,id, face_th=0.7, cloth_th=0.85 )

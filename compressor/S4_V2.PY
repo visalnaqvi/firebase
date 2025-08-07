@@ -18,7 +18,7 @@ import time
 import traceback
 
 # Configuration
-BATCH_SIZE = 50
+BATCH_SIZE = 10
 PARALLEL_LIMIT = 10
 MAX_RETRIES = 3
 RETRY_DELAY = 1  # seconds
@@ -82,7 +82,7 @@ def insert_faces_batch_with_retry(records, group_id, max_retries=MAX_RETRIES):
             VALUES %s
             """
             values = [
-                (r['id'], r['image_id'], group_id, r['person_id'], r['face_thumb_bytes'])
+                (r['id'], r['image_id'], group_id, None, r['face_thumb_bytes'])
                 for r in records
             ]
             

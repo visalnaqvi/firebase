@@ -34,6 +34,7 @@ def main():
                 print(f"✅ Updated Status for group {group_id} as hot")
             else:
                 cur.execute("UPDATE groups SET status = %s where id = %s", ("warmed" , group_id))
+                cur.execute("UPDATE images SET image_byte = null where group_id = %s", (group_id))
                 updated_groups += 1
                 print(f"✅ Updated Status for group {group_id} as warmed")
 

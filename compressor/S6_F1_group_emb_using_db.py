@@ -53,25 +53,43 @@ class HybridFaceGrouping:
             items.append(row["id"])
         print(f"✅ Got {len(items)} groups with warmed status")
         return items
-    def fetch_items_from_db(self , group_id):
+    def fetch_items_from_db(self, group_id):
         conn = get_db_connection()
-        print(f"🔃 Fetching face with for group {group_id}")
+        print(f"🔃 Fetching face for group {group_id}")
         cursor = conn.cursor()
-        cursor.execute("SELECT id, person_id, face_emb, clothing_emb, assigned FROM faces where group_id = %s" , (group_id))
+        cursor.execute("SELECT id, person_id FROM faces WHERE group_id = %s", (group_id,))
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
 
+        point_ids = [row["id"] for row in rows]
+        qdrant_points = self.qdrant.retrieve(
+            collection_name=self.collection_name,
+            ids=point_ids,
+            with_payload=True,
+            with_vectors=True
+        )
+
+        qdrant_map = {str(p.id): p for p in qdrant_points}
+
         items = []
         for row in rows:
+            point_id = str(row["id"])
+            q_point = qdrant_map.get(point_id)
+
+            if not q_point:
+                print(f"⚠️ Qdrant point not found for ID: {point_id}")
+                continue
+
             items.append({
-                "id": row["id"],  # Qdrant point ID
+                "id": row["id"],
                 "person_id": row["person_id"],
-                "face": np.array(row["face_emb"], dtype=np.float32),
-                "cloth": torch.tensor(row["clothing_emb"], dtype=torch.float32),
-                "assigned": row["assigned"]
+                "face": q_point.vectors.get("face") if q_point.vectors else None,
+                "cloth": q_point.vectors.get("cloth") if q_point.vectors else None,
+                "assigned": row["person_id"] != -1
             })
-        print(f"✅ Got {len(items)} face for group {group_id}")
+
+        print(f"✅ Got {len(items)} face(s) for group {group_id}")
         return items
 
     def find_similar_candidates(self, item, face_threshold=0.7, limit=50):
@@ -87,8 +105,11 @@ class HybridFaceGrouping:
     def group_and_assign_person_ids(self, items, face_th=0.7, cloth_th=0.85):
         print("🎯 Starting grouping and assigning person IDs")
         groups = []
-        updates = []  # For DB updates
-        qdrant_updates = []  # For Qdrant payload updates
+        updates = []
+        qdrant_updates = []
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
 
         for item in items:
             if item['assigned']:
@@ -97,7 +118,7 @@ class HybridFaceGrouping:
             group = [item]
             item['assigned'] = True
             queue = deque([item])
-            person_id = str(uuid.uuid4())  # ✅ Generate UUID for person_id
+            person_id = str(uuid.uuid4())
 
             while queue:
                 current = queue.popleft()
@@ -116,7 +137,6 @@ class HybridFaceGrouping:
                         queue.append(other)
                         group.append(other)
 
-            # ✅ Assign UUID as person_id
             for member in group:
                 member['person_id'] = person_id
                 updates.append((person_id, member['id']))
@@ -128,31 +148,18 @@ class HybridFaceGrouping:
             groups.append(group)
             print(f"👥 Assigned person_id {person_id} to {len(group)} faces")
 
-        # ✅ Bulk update DB
-        self.update_person_ids_in_db(updates)
-
-        # ✅ Bulk update Qdrant
-        self.update_person_ids_in_qdrant(qdrant_updates)
-
-        return groups
-
-    def update_person_ids_in_db(self, updates):
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.executemany("UPDATE faces SET person_id = %s and assigned=TRUE WHERE id = %s", updates)
+        # ✅ Commit updates
+        cursor.executemany("UPDATE faces SET person_id = %s WHERE id = %s", updates)
         conn.commit()
         cursor.close()
         conn.close()
-        print(f"✅ Updated {len(updates)} records in DB with person_id")
 
-    def update_person_ids_in_qdrant(self, updates):
-        for update in updates:
-            self.qdrant.set_payload(
-                collection_name=self.collection_name,
-                payload=update['payload'],
-                points=[update['id']]
-            )
-        print(f"✅ Updated {len(updates)} points in Qdrant with person_id")
+       
+
+        return groups
+
+
+  
 
 # 🔧 Usage Example
 if __name__ == "__main__":

@@ -53,13 +53,12 @@ def insert_ready_to_group_batch(records , id):
     conn = get_db_connection()
     cur = conn.cursor()
     query = """
-    INSERT INTO faces (id, face_emb, clothing_emb, assigned, image_id, group_id, person_id , cropped_img_byte , face_thumb_bytes )
+    INSERT INTO faces (id, image_id, group_id, person_id , face_thumb_bytes )
     VALUES %s
     """
     values = [
         (r['id'],
-         r['face_emb'].tolist(), r['clothing_emb'].cpu().tolist(),
-         r['assigned'], r['image_id'],r[id], r['person_id'] , r['cropped_img_byte'] , r['face_thumb_bytes'])
+         r['image_id'],r[id], r['person_id'] , r['face_thumb_bytes'])
         for r in records
     ]
     execute_values(cur, query, values)
@@ -74,7 +73,7 @@ def mark_images_processed_batch(image_ids):
     conn = get_db_connection()
     cur = conn.cursor()
     
-    query = "UPDATE images SET status = 'warmed' WHERE id = ANY(%s)"
+    query = "UPDATE images SET status = 'warmed' , image_byte=null WHERE id = ANY(%s)"
     cur.execute(query, (image_ids,))  
 
     conn.commit()
@@ -83,27 +82,27 @@ def mark_images_processed_batch(image_ids):
 
 class HybridFaceIndexer:
     def __init__(self, host="localhost", port=6333):
-        # ✅ Face Analysis
+
         self.face_app = FaceAnalysis(name='buffalo_l', providers=['CPUExecutionProvider'])
         self.face_app.prepare(ctx_id=0)
 
-        # ✅ FashionCLIP Model
+  
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.fashion_model = AutoModel.from_pretrained('Marqo/marqo-fashionCLIP', trust_remote_code=True).to(self.device)
         self.fashion_processor = AutoProcessor.from_pretrained('Marqo/marqo-fashionCLIP', trust_remote_code=True)
 
-        # ✅ Qdrant
-        self.qdrant = QdrantClient(host=host, port=port)
-        self.collection_name = "hybrid_people_collection"
-        self._setup_collection()
 
-    def _setup_collection(self):
+        self.qdrant = QdrantClient(host=host, port=port)
+
+        
+
+    def setup_collection(self , collection_name):
         print(f"🔃 Setting up qudrant collection")
-        if self.qdrant.collection_exists(self.collection_name):
-            self.qdrant.delete_collection(self.collection_name)
+        if self.qdrant.collection_exists(collection_name):
+            self.qdrant.delete_collection(collection_name)
 
         self.qdrant.create_collection(
-            collection_name=self.collection_name,
+            collection_name=collection_name,
             vectors_config={
                 "face": VectorParams(size=512, distance=Distance.COSINE),
                 "clothing": VectorParams(size=512, distance=Distance.COSINE)
@@ -188,7 +187,7 @@ class HybridFaceIndexer:
                                 id=point_id,
                                 vector={
                                     "face": face_emb.tolist(),
-                                    "clothing": clothing_emb.cpu().tolist()
+                                    "cloth": clothing_emb.cpu().tolist()
                                 },
                                 payload={
                                     "person_id": -1,
@@ -203,12 +202,8 @@ class HybridFaceIndexer:
 
                     records.append({
                         "id": point_id,
-                        "face_emb": face_emb,
-                        "clothing_emb": clothing_emb,
-                        "assigned": False,
                         "image_id": image_id,
                         "person_id": -1,
-                        "cropped_img_byte":cropped_img_byte,
                         "face_thumb_bytes":face_thumb_bytes
                     })
         print(f"✅ All Face proccessing finished for image {image_id}")
@@ -221,6 +216,7 @@ if __name__ == "__main__":
     groups = [row[0] for row in fetch_warm_groups()]
     print(f"ℹFound {len(groups)} warm groups")
     for id in groups:
+        indexer.setup_collection(id)
         print(f"🔃 Processing group {id}")
         unprocessed = fetch_unprocessed_images(id)
         print(f"ℹFound {len(unprocessed)} unprocessed images")

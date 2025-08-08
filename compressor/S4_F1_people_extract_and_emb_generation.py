@@ -75,8 +75,12 @@ def mark_images_processed_batch(image_ids):
     conn = get_db_connection()
     cur = conn.cursor()
     
-    query = "UPDATE images SET status = 'warmed' , image_byte=null WHERE id = ANY(%s)"
-    cur.execute(query, (image_ids,))  
+    query = """
+        UPDATE images
+        SET status = 'warmed', image_byte = NULL
+        WHERE id = ANY(%s::uuid[])
+    """
+    cur.execute(query, (image_ids,))
 
     conn.commit()
     cur.close()
@@ -136,7 +140,7 @@ class HybridFaceIndexer:
         if not success:
             raise ValueError("Could not encode image")
         return buffer.tobytes()
-    def process_image(self, image_id,image_byte_3k, yolo_model):
+    def process_image(self, image_id,image_byte_3k,group_id, yolo_model):
         nparr = np.frombuffer(image_byte_3k, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         print(f"🔃Processing Image {image_id}")
@@ -184,7 +188,7 @@ class HybridFaceIndexer:
                     print(f"🔃 Inserting Embedding into qdrant db with point id as {point_id} for Image {image_id}")
                     try:
                         self.qdrant.upsert(
-                            collection_name=self.collection_name,
+                            collection_name=group_id,
                             points=[
                                 PointStruct(
                                     id=point_id,
@@ -214,7 +218,7 @@ class HybridFaceIndexer:
 
         print(f"✅ All Face proccessing finished for image {image_id}")
         return records
-    def process_images_batch(self, images_batch, yolo_model):
+    def process_images_batch(self, images_batch, group_id, yolo_model):
         """Process a batch of images in parallel"""
         print(f"🔃 Processing batch of {len(images_batch)} images with {PARALLEL_LIMIT} parallel workers")
         
@@ -230,7 +234,7 @@ class HybridFaceIndexer:
             
             with concurrent.futures.ThreadPoolExecutor(max_workers=PARALLEL_LIMIT) as executor:
                 futures = [
-                    executor.submit(self.process_image, id , image_byte, yolo_model)
+                    executor.submit(self.process_image, id , image_byte,group_id, yolo_model)
                     for id , image_byte in chunk
                 ]
                 
@@ -266,7 +270,7 @@ if __name__ == "__main__":
                 processed_image_ids = []
 
                 print(f"\n🔍 Processing {id}")
-                records = indexer.process_images_batch(unprocessed, yolo_model)
+                records = indexer.process_images_batch(unprocessed,id, yolo_model)
                 if records:
                     print(f"✅ Got All Face Records for image {id} extending into all records")
                     all_records.extend(records)
@@ -279,5 +283,5 @@ if __name__ == "__main__":
 
                 print(f"✅ Process completed: {len(all_records)} faces indexed & stored")
             except Exception as e:
-                print(f"❌ Failed to insert into Qdrant for image")
+                print(f"❌ Failed {str(e)}")
                 continue

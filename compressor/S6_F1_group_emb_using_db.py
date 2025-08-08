@@ -42,7 +42,7 @@ class HybridFaceGrouping:
         conn = get_db_connection()
         cursor = conn.cursor()
         print(f"🔃 Fetching groups with status warmed")
-        cursor.execute("SELECT id FROM groups where status = %s" , ("warmed"))
+        cursor.execute("SELECT id FROM groups where status = 'warmed'")
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
@@ -91,12 +91,11 @@ class HybridFaceGrouping:
         print(f"✅ Got {len(items)} face(s) for group {group_id}")
         return items
 
-    def find_similar_candidates(self, item,group_id ,  face_threshold=0.7, limit=50 , ):
+    def find_similar_candidates(self, item,group_id ,  face_threshold=0.7 ):
         candidates = self.qdrant.query_points(
             collection_name=group_id,
             query=item['face'].tolist(),
             using="face",
-            limit=limit,
             score_threshold=face_threshold
         )
         return [point.id for point in candidates.points if point.id != item['id']]

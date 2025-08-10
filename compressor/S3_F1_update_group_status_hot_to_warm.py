@@ -18,31 +18,23 @@ def main():
         cur = conn.cursor(cursor_factory=RealDictCursor)
         print("✅ Connected to PostgreSQL")
 
-        print("🔃 Getting groups with hot status")
-        cur.execute("SELECT id FROM groups WHERE status = 'hot'")
-        hot_groups = [row['id'] for row in cur.fetchall()]
-        print(f"✅ Got {len(hot_groups)} hot groups")
-
-        for group_id in hot_groups:
-            print(f"🔃 Getting images for group {group_id}")
-            cur.execute(
-                "SELECT COUNT(*) AS total_images FROM images WHERE group_id = %s AND status = 'hot'",
-                (group_id,)
-            )
-            stats = cur.fetchone()
-            total_images = stats['total_images']
-
-            if total_images > 0:
-                print(f"Skipping group {group_id}")
-            else:
-                cur.execute(
-                    "UPDATE groups SET status = 'warm' WHERE id = %s",
-                    (group_id,)
-                )
-                print(f"✅ Updated group {group_id} status to warm")
-
+        print("🔃 Updating 'hot' groups with no 'hot' images to 'warm'")
+        update_sql = """
+        UPDATE groups g
+        SET status = 'warm'
+        WHERE g.status = 'hot'
+          AND NOT EXISTS (
+              SELECT 1
+              FROM images i
+              WHERE i.group_id = g.id
+                AND i.status = 'hot'
+          );
+        """
+        cur.execute(update_sql)
+        affected_rows = cur.rowcount
         conn.commit()
-        print("✅ Done updating all groups")
+
+        print(f"✅ Updated {affected_rows} groups to 'warm'")
 
     except Exception as e:
         print(f"❌ Error: {e}")

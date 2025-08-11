@@ -51,12 +51,12 @@ def get_db_connection():
     conn = None
     try:
         conn = psycopg2.connect(
-            host=config.DB_HOST,
-            port=config.DB_PORT,
-            dbname=config.DB_NAME,
-            user=config.DB_USER,
-            password=config.DB_PASSWORD
-        )
+        host="localhost",
+        port="5432",
+        dbname="postgres",
+        user="postgres",
+        password="admin"
+    )
         yield conn
     except Exception as e:
         if conn:
@@ -100,7 +100,6 @@ class DatabaseManager:
                 query = """
                 INSERT INTO faces (id, image_id, group_id, person_id, face_thumb_bytes)
                 VALUES %s
-                ON CONFLICT (id) DO NOTHING
                 """
                 values = [
                     (r['id'], r['image_id'], group_id, r['person_id'], r['face_thumb_bytes'])
@@ -118,7 +117,7 @@ class DatabaseManager:
             
         with get_db_connection() as conn:
             with conn.cursor() as cur:
-                query = "UPDATE images SET status = 'warmed', image_byte = NULL WHERE id = ANY(%s)"
+                query = "UPDATE images SET status = 'warmed' WHERE id = ANY(%s::uuid[])"
                 cur.execute(query, (image_ids,))
                 conn.commit()
                 logger.info(f"Marked {len(image_ids)} images as processed")
@@ -151,16 +150,16 @@ class HybridFaceIndexer:
     def setup_collection(self, collection_name: str) -> None:
         """Setup Qdrant collection with proper error handling"""
         try:
-            if self.qdrant.collection_exists(collection_name):
-                self.qdrant.delete_collection(collection_name)
+            if not self.qdrant.collection_exists(collection_name):
+                # self.qdrant.delete_collection(collection_name)
 
-            self.qdrant.create_collection(
-                collection_name=collection_name,
-                vectors_config={
-                    "face": VectorParams(size=512, distance=Distance.COSINE),
-                    "cloth": VectorParams(size=512, distance=Distance.COSINE)
-                }
-            )
+                self.qdrant.create_collection(
+                    collection_name=collection_name,
+                    vectors_config={
+                        "face": VectorParams(size=512, distance=Distance.COSINE),
+                        "cloth": VectorParams(size=512, distance=Distance.COSINE)
+                    }
+                )
             logger.info(f"Collection {collection_name} setup completed")
         except Exception as e:
             logger.error(f"Failed to setup collection {collection_name}: {e}")
@@ -309,7 +308,7 @@ class HybridFaceIndexer:
 def process_group(group_id: int, indexer: HybridFaceIndexer, yolo_model) -> None:
     """Process a single group with proper error handling and transaction management"""
     try:
-        indexer.setup_collection(str(group_id))
+        indexer.setup_collection(group_id)
         logger.info(f"Processing group {group_id}")
         
         processed_count = 0
@@ -325,7 +324,7 @@ def process_group(group_id: int, indexer: HybridFaceIndexer, yolo_model) -> None
             logger.info(f"Found {len(unprocessed)} unprocessed images for group {group_id}")
             
             # Process the batch
-            records = indexer.process_images_batch(unprocessed, yolo_model, str(group_id))
+            records = indexer.process_images_batch(unprocessed, yolo_model, group_id)
             
             # Extract processed image IDs (all images in batch are considered processed)
             processed_image_ids = [img_id for img_id, _ in unprocessed]

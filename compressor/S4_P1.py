@@ -14,15 +14,14 @@ from psycopg2.extras import execute_values
 import concurrent.futures
 import numpy as np
 BATCH_SIZE = 10
-PARALLEL_LIMIT = 10
+PARALLEL_LIMIT = 2
 def get_db_connection():
     return psycopg2.connect(
-        host="ballast.proxy.rlwy.net",
-        port="56193",
-        dbname="railway",
+        host="localhost",
+        port="5432",
+        dbname="postgres",
         user="postgres",
-        password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
-        # or use os.environ.get("POSTGRES_URL") if using env var
+        password="admin"
     )
 
 def fetch_unprocessed_images(group_id):
@@ -70,18 +69,17 @@ def insert_ready_to_group_batch(records , id):
     conn.close()
 
 def mark_images_processed_batch(image_ids):
+    """Mark images as warmed in DB after processing"""
     if not image_ids:
         return
     conn = get_db_connection()
     cur = conn.cursor()
-    
     query = """
         UPDATE images
-        SET status = 'warmed', image_byte = NULL
+        SET status = 'warmed'
         WHERE id = ANY(%s::uuid[])
     """
     cur.execute(query, (image_ids,))
-
     conn.commit()
     cur.close()
     conn.close()
@@ -198,7 +196,8 @@ class HybridFaceIndexer:
                                     },
                                     payload={
                                         "person_id": None,
-                                        "image_id": image_id
+                                        "image_id": image_id,
+                                        "cloth_ids":None
                                     }
                                 )
                             ]
@@ -253,35 +252,44 @@ class HybridFaceIndexer:
         return results
 if __name__ == "__main__":
     yolo_model = YOLO("yolov8x.pt")
-
     indexer = HybridFaceIndexer()
+
     groups = [row[0] for row in fetch_warm_groups()]
-    print(f"ℹFound {len(groups)} warm groups")
-    for id in groups:
-        indexer.setup_collection(id)
-        print(f"🔃 Processing group {id}")
-        hasMore = True
-        while hasMore:
+    print(f"ℹ Found {len(groups)} warm groups")
+
+    for group_id in groups:
+        indexer.setup_collection(group_id)
+        print(f"🔃 Processing group {group_id}")
+
+        while True:  # loop until no more images in this group
             try:
-                unprocessed = fetch_unprocessed_images(id)
-                print(f"ℹFound {len(unprocessed)} unprocessed images")
-                hasMore =  len(unprocessed) == BATCH_SIZE
+                # 1️⃣ Fetch one batch
+                unprocessed = fetch_unprocessed_images(group_id)
+                print(f"ℹ Found {len(unprocessed)} unprocessed images for group {group_id}")
+
+                if not unprocessed:
+                    break  # no more images, move to next group
+
+                # 2️⃣ Process batch → Qdrant + prepare face records
                 all_records = []
                 processed_image_ids = []
 
-                print(f"\n🔍 Processing {id}")
-                records = indexer.process_images_batch(unprocessed,id, yolo_model)
+                records = indexer.process_images_batch(unprocessed, group_id, yolo_model)
+
                 if records:
-                    print(f"✅ Got All Face Records for image {id} extending into all records")
                     all_records.extend(records)
                     processed_image_ids.extend([record["image_id"] for record in records])
 
+                # 3️⃣ Insert into PostgreSQL (faces table)
                 if all_records:
-                    insert_ready_to_group_batch(all_records , id)
+                    insert_ready_to_group_batch(all_records, group_id)
+
+                # 4️⃣ Mark processed in PostgreSQL (images table)
                 if processed_image_ids:
                     mark_images_processed_batch(processed_image_ids)
 
-                print(f"✅ Process completed: {len(all_records)} faces indexed & stored")
+                print(f"✅ Batch completed: {len(all_records)} faces indexed & stored for group {group_id}")
+
             except Exception as e:
-                print(f"❌ Failed {str(e)}")
-                continue
+                print(f"❌ Failed batch for group {group_id}: {str(e)}")
+                break

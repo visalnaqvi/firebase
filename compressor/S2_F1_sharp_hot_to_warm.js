@@ -14,13 +14,13 @@ admin.initializeApp({
 const bucket = admin.storage().bucket();
 
 const pool = new Pool({
-    connectionString: "postgresql://postgres:AfldldzckDWtkskkAMEhMaDXnMqknaPY@ballast.proxy.rlwy.net:56193/railway"
+    connectionString: "postgresql://postgres:admin@localhost:5432/postgres"
 });
 
 // Configuration
-const BATCH_SIZE = 50; // Reduced batch size for large binary data
+const BATCH_SIZE = 50
 const PARALLEL_LIMIT = 10;
-const DB_TIMEOUT = 60000; // 60 seconds timeout for database operations
+const DB_TIMEOUT = 60000; 
 
 function getFileNameFromURL(url) {
     return decodeURIComponent(path.basename(new URL(url).pathname));
@@ -178,6 +178,7 @@ async function performChunkedUpdates(client, successfulResults) {
     console.log(`🔃 Using chunked updates with ${CHUNK_SIZE} records per chunk`);
 
     let totalUpdated = 0;
+    await client.query('BEGIN');
     try {
         for (let i = 0; i < successfulResults.length; i += CHUNK_SIZE) {
             const chunk = successfulResults.slice(i, i + CHUNK_SIZE);
@@ -204,7 +205,9 @@ async function performChunkedUpdates(client, successfulResults) {
 
             console.log(`✅ Updated chunk ${Math.floor(i / CHUNK_SIZE) + 1} /${Math.ceil(successfulResults.length / CHUNK_SIZE)} (${totalUpdated}/${successfulResults.length} total)`);
         }
+         await client.query('COMMIT');
     } catch (error) {
+        await client.query('ROLLBACK');
         console.log("❌ Chunk update error:", error.message);
     }
 
@@ -241,7 +244,7 @@ async function updateDatabaseBatch(client, results) {
 
         // Begin transaction for batch update
         await client.query('BEGIN');
-        await performBatchUpdate(client, successfulResults);
+        await performChunkedUpdates(client, successfulResults);
         await client.query('COMMIT');
 
     } catch (batchError) {

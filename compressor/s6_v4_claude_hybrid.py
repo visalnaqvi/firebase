@@ -39,11 +39,11 @@ class MatchCandidate:
 
 def get_db_connection():
     return psycopg2.connect(
-        host="ballast.proxy.rlwy.net",
-        port="56193",
-        dbname="railway",
+        host="localhost",
+        port="5432",
+        dbname="postgres",
         user="postgres",
-        password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
+        password="admin"
     )
 
 @contextmanager
@@ -141,11 +141,11 @@ class EnhancedFaceGrouping:
             
             embeddings = {}
             for point in points:
-                if not point.vectors:
-                    continue
+                vectors = getattr(points[0], "vectors", None) or getattr(points[0], "vector", None)
+            
                 
-                face_vec = np.array(point.vectors.get("face", []))
-                cloth_vec = point.vectors.get("cloth")
+                face_vec = np.array(vectors.get("face", []))
+                cloth_vec = vectors.get("cloth")
                 cloth_tensor = torch.tensor(cloth_vec) if cloth_vec else None
                 
                 # Validate embeddings
@@ -404,26 +404,17 @@ class EnhancedFaceGrouping:
                 qdrant_points = []
                 for face_id, cloth_ids in cloth_updates.items():
                     person_id = assignments.get(face_id)
-                    if person_id:
-                        qdrant_points.append({
-                            "id": face_id,
-                            "payload": {
+                    p = {
                                 "person_id": person_id,
                                 "cloth_ids": list(cloth_ids)
                             }
-                        })
-                
-                if qdrant_points:
-                    try:
-                        self.qdrant.upsert(
+                    if person_id:
+                        self.qdrant.set_payload(
                             collection_name=group_id,
-                            points=qdrant_points
+                            payload=p,
+                            points= [face_id],
                         )
-                        logger.info(f"🔄 Updated {len(qdrant_points)} points in Qdrant")
-                    except Exception as e:
-                        logger.error(f"❌ Qdrant update failed: {e}")
-                        # We don't raise here to avoid rolling back PostgreSQL
-                        # In production, you might want to implement a retry mechanism
+                        
 
     def track_similar_faces(self, group_id: str, G: nx.Graph, assignments: Dict[str, str]):
         """Track faces that are similar but assigned different person_ids"""

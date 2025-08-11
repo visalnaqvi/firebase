@@ -56,7 +56,7 @@ class HybridFaceGrouping:
         conn = get_db_connection()
         print(f"🔃 Fetching face for group {group_id}")
         cursor = conn.cursor()
-        cursor.execute("SELECT id, person_id FROM faces WHERE group_id = %s", (group_id,))
+        cursor.execute("SELECT id, person_id FROM faces2 WHERE group_id = %s", (group_id,))
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
@@ -147,7 +147,7 @@ class HybridFaceGrouping:
             print(f"👥 Assigned person_id {person_id} to {len(group)} faces")
 
         # ✅ Commit updates
-        cursor.executemany("UPDATE faces SET person_id = %s WHERE id = %s", updates)
+        cursor.executemany("UPDATE faces2 SET person_id = %s WHERE id = %s", updates)
         conn.commit()
         cursor.close()
         conn.close()

@@ -242,20 +242,20 @@ class SimplifiedFaceGrouping:
             # Check if any assigned match has score > 0.8
             high_score_matches = [m for m in person_a_matches if m['score'] > 0.8]
             
-            if high_score_matches and is_new:
+            if is_new:
                 print(f"   📝 Case B: High score match found (>{0.8}) - is_new is true assigning existing person_id: {person_a}")
                 final_person_id = person_a
                 faces_to_update = [match['id'] for match in unassigned]
-            elif high_score_matches and not is_new:
+            else:
                 print(f"   📝 Case B: high score match - is_new is false assigning new_person_id UUID")
                 # Fix: Get all match IDs from all assigned groups
                 faces_to_update = []
                 for matches_list in assigned.values():
                     faces_to_update.extend([match['id'] for match in matches_list])
-            else:
-                print(f"   📝 Case B: No high score match - assigning new UUID, adding to similar faces")
-                faces_to_update = [match['id'] for match in unassigned]
-                similar_faces.append(person_a)
+            # else:
+            #     print(f"   📝 Case B: No high score match - assigning new UUID, adding to similar faces")
+            #     faces_to_update = [match['id'] for match in unassigned]
+            #     similar_faces.append(person_a)
                 
         else:
             # Case C: Multiple assigned person_ids
@@ -355,7 +355,7 @@ class SimplifiedFaceGrouping:
                 CREATE TABLE IF NOT EXISTS similar_faces (
                     id SERIAL PRIMARY KEY,
                     group_id VARCHAR(255),
-                    face_id VARCHAR(255),
+                    person_id VARCHAR(255),
                     similar_person_id VARCHAR(255),
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -363,13 +363,13 @@ class SimplifiedFaceGrouping:
             
             # Insert similar faces data
             insert_data = []
-            for face_id, similar_person_ids in similar_faces_data.items():
+            for person_id, similar_person_ids in similar_faces_data.items():
                 for similar_person_id in similar_person_ids:
-                    insert_data.append((group_id, face_id, similar_person_id))
+                    insert_data.append((group_id, person_id, similar_person_id))
             
             if insert_data:
                 cursor.executemany(
-                    "INSERT INTO similar_faces (group_id, face_id, similar_person_id) VALUES (%s, %s, %s)",
+                    "INSERT INTO similar_faces (group_id, person_id, similar_person_id) VALUES (%s, %s, %s)",
                     insert_data
                 )
                 conn.commit()
@@ -433,7 +433,7 @@ class SimplifiedFaceGrouping:
             face_assignments[face_id] = final_person_id
             
             if similar_faces:
-                similar_faces_data[face_id] = similar_faces
+                similar_faces_data[final_person_id] = similar_faces
             
             # Step 6: Prepare cloth_ids updates for all matches
             cloth_ids = set()

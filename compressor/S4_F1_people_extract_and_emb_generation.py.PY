@@ -16,8 +16,119 @@ from qdrant_client.models import VectorParams, Distance, PointStruct
 from psycopg2.extras import execute_values
 import concurrent.futures
 import numpy as np
+import math
 
-# Configuration
+def _normalize(value, min_val, max_val):
+    if max_val <= min_val:
+        return 0.0
+    return float(min(max((value - min_val) / (max_val - min_val), 0.0), 1.0))
+
+def estimate_frontalness_from_landmarks(face, face_crop):
+    """
+    Try to estimate frontalness using landmarks if explicit yaw/pitch not available.
+    Returns a score 0..1 where 1 is frontal.
+    """
+    # many insightface outputs include 'kps' or 'landmark' as an array of 5 or 106 points
+    kps = None
+    if hasattr(face, "kps") and face.kps is not None:
+        kps = np.array(face.kps)  # usually shape (5,2)
+    elif hasattr(face, "landmark") and face.landmark is not None:
+        kps = np.array(face.landmark)  # maybe (106,2)
+    if kps is None or kps.size == 0:
+        return 1.0  # give neutral credit if no landmarks
+
+    # Use eye-center symmetry as a cheap proxy:
+    try:
+        # pick left/right eye points depending on format
+        if kps.shape[0] >= 5:
+            left_eye = kps[0]
+            right_eye = kps[1]
+        else:
+            # fallback: use extremes in x
+            xs = kps[:, 0]
+            left_eye = kps[np.argmin(xs)]
+            right_eye = kps[np.argmax(xs)]
+
+        # horizontal displacement between eyes relative to width
+        dx = abs(right_eye[0] - left_eye[0])
+        width = face_crop.shape[1] if face_crop is not None else dx
+        ratio = dx / (width + 1e-6)
+        # if ratio is too small, face might be turned (one eye far behind)
+        # normalize expected ratio ~ 0.25..0.45 typical -> map to 0..1
+        return _normalize(ratio, 0.18, 0.45)
+    except Exception:
+        return 1.0
+
+def compute_face_quality(face_crop: np.ndarray, face) -> float:
+    """
+    Compute a 0..1 quality score for the crop and the face object returned by insightface.
+    face_crop: the actual image crop (BGR numpy array).
+    face: the insightface face object (has bbox, det_score, maybe kps, maybe pose).
+    """
+    if face_crop is None or face_crop.size == 0:
+        return 0.0
+
+    # 1) Sharpness (Laplacian variance)
+    try:
+        gray = cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY)
+        sharpness = cv2.Laplacian(gray, cv2.CV_64F).var()
+        # Typical values vary; tune min/max on sample data
+        sharp_norm = _normalize(sharpness, 50, 1500)  # tune these bounds
+    except Exception:
+        sharp_norm = 0.0
+
+    # 2) Detection confidence (if available)
+    det_conf = 0.0
+    if hasattr(face, "det_score") and face.det_score is not None:
+        try:
+            det_conf = float(face.det_score)
+            det_conf = _normalize(det_conf, 0.3, 1.0)
+        except Exception:
+            det_conf = 0.0
+
+    # 3) Frontalness / pose
+    pose_score = 1.0
+    # some models provide yaw/pitch/roll, or face.pose
+    if hasattr(face, "yaw") or hasattr(face, "pose"):
+        try:
+            yaw = getattr(face, "yaw", 0.0)
+            pitch = getattr(face, "pitch", 0.0)
+            # assume degrees; clamp large values
+            yaw = float(yaw) if yaw is not None else 0.0
+            pitch = float(pitch) if pitch is not None else 0.0
+            yaw_score = max(0.0, 1.0 - abs(yaw) / 40.0)  # 40° tolerance
+            pitch_score = max(0.0, 1.0 - abs(pitch) / 40.0)
+            pose_score = (yaw_score + pitch_score) / 2.0
+        except Exception:
+            pose_score = 1.0
+    else:
+        # fallback to landmarks-based estimate
+        try:
+            pose_score = estimate_frontalness_from_landmarks(face, face_crop)
+        except Exception:
+            pose_score = 1.0
+
+    # 4) Completeness / bbox margin: ensure bbox isn't tightly cut at edges
+    completeness = 1.0
+    try:
+        if hasattr(face, "bbox") and face.bbox is not None:
+            x1, y1, x2, y2 = map(int, face.bbox)
+            h, w = face_crop.shape[:2]
+            # If bbox hits crop border, penalize
+            margin_x = min(x1, w - x2)
+            margin_y = min(y1, h - y2)
+            min_margin = min(margin_x, margin_y)
+            # normalize margin (0 -> bad, >= 10px -> good). Tune if needed.
+            completeness = _normalize(min_margin, 0, 10)
+        else:
+            completeness = 1.0
+    except Exception:
+        completeness = 1.0
+
+    # Weighted sum (tune weights)
+    # Give sharpness and pose the most weight
+    score = 0.45 * sharp_norm + 0.25 * pose_score + 0.15 * det_conf + 0.15 * completeness
+    return float(min(max(score, 0.0), 1.0))
 @dataclass
 class Config:
     BATCH_SIZE: int = 50  # Increased for better efficiency
@@ -98,7 +209,7 @@ class DatabaseManager:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 query = """
-                INSERT INTO faces (id, image_id, group_id, person_id, face_thumb_bytes)
+                INSERT INTO faces (id, image_id, group_id, person_id, face_thumb_bytes , quality_score)
                 VALUES %s
                 """
                 values = [
@@ -238,11 +349,26 @@ class HybridFaceIndexer:
                             
                             # Extract face thumbnail
                             face_thumb_bytes = None
-                            if len(faces) == 1:
+                            face_crop = None
+                            try:
                                 x1_f, y1_f, x2_f, y2_f = map(int, face.bbox)
-                                face_crop = person_crop[y1_f:y2_f, x1_f:x2_f]
-                                if face_crop.size > 0:
-                                    face_thumb_bytes = self.image_to_bytes(face_crop)
+                                # clip bbox to person_crop bounds to avoid errors
+                                x1_f = max(0, x1_f); y1_f = max(0, y1_f)
+                                x2_f = min(person_crop.shape[1], x2_f); y2_f = min(person_crop.shape[0], y2_f)
+                                if x2_f > x1_f and y2_f > y1_f:
+                                    face_crop = person_crop[y1_f:y2_f, x1_f:x2_f]
+                                    if face_crop.size > 0:
+                                        face_thumb_bytes = self.image_to_bytes(face_crop)
+                            except Exception:
+                                face_crop = None
+                                face_thumb_bytes = None
+
+                            # compute quality score (use helper). fallback to 0.0
+                            try:
+                                quality_score = compute_face_quality(face_crop, face)
+                            except Exception as e:
+                                logger.warning(f"Quality scoring failed for image {image_id}, face: {e}")
+                                quality_score = 0.0
                             
                             # Insert into Qdrant
                             self.qdrant.upsert(
@@ -257,7 +383,8 @@ class HybridFaceIndexer:
                                         payload={
                                             "person_id": None,
                                             "image_id": image_id,
-                                            "cloth_ids":None
+                                            "cloth_ids":None,
+                                            "quality_score": quality_score
                                         }
                                     )
                                 ]
@@ -267,7 +394,8 @@ class HybridFaceIndexer:
                                 "id": point_id,
                                 "image_id": image_id,
                                 "person_id": None,
-                                "face_thumb_bytes": face_thumb_bytes
+                                "face_thumb_bytes": face_thumb_bytes,
+                                "quality_score": quality_score
                             })
                             
                         except Exception as e:

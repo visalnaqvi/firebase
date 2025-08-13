@@ -1,5 +1,5 @@
 key.json
-/compressor/venv
+/compressor/venv_fixed
 /compressor/yolov8n.pt
 /compressor/yolov8x.pt
 /compressor/node_modules

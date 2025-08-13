@@ -1,4 +1,3 @@
-import sqlite3
 import numpy as np
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct
@@ -6,6 +5,8 @@ from typing import Dict, List, Tuple, Optional
 import logging
 from dataclasses import dataclass
 from collections import defaultdict
+import psycopg2
+from psycopg2.extras import DictCursor
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -16,27 +17,33 @@ class Face:
     """Face data structure"""
     id: int
     person_id: int
-    thumb_bytes: bytes
     group_id: int
     quality_score: float
     image_id: int
 
+def get_db_connection():
+    return psycopg2.connect(
+        host="localhost",
+        port="5432",
+        dbname="postgres",
+        user="postgres",
+        password="admin"
+    )
+
 class FaceCentroidGenerator:
     """Generate and store person face centroids in Qdrant"""
     
-    def __init__(self, db_path: str, qdrant_host: str = "localhost", qdrant_port: int = 6333):
+    def __init__(self, qdrant_host: str = "localhost", qdrant_port: int = 6333):
         """
         Initialize the centroid generator
         
         Args:
-            db_path: Path to SQLite database containing faces table
             qdrant_host: Qdrant server host
             qdrant_port: Qdrant server port
         """
-        self.db_path = db_path
         self.qdrant_client = QdrantClient(host=qdrant_host, port=qdrant_port)
         
-    def get_faces_by_group(self) -> Dict[int, List[Face]]:
+    def get_faces_by_group(self) -> Dict[str, List[Face]]:
         """
         Retrieve all faces grouped by group_id from database
         
@@ -46,30 +53,31 @@ class FaceCentroidGenerator:
         faces_by_group = defaultdict(list)
         
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
+            conn = get_db_connection()
+            cursor = conn.cursor(cursor_factory=DictCursor)
                 
-                query = """
-                SELECT id, person_id, thumb_bytes, group_id, quality_score, image_id
-                FROM faces
-                ORDER BY group_id, person_id, quality_score DESC
-                """
-                
-                cursor.execute(query)
-                rows = cursor.fetchall()
-                
-                for row in rows:
-                    face = Face(
-                        id=row[0],
-                        person_id=row[1],
-                        thumb_bytes=row[2],
-                        group_id=row[3],
-                        quality_score=row[4],
-                        image_id=row[5]
-                    )
-                    faces_by_group[face.group_id].append(face)
+            query = """
+            SELECT id, person_id, group_id, quality_score, image_id
+            FROM faces
+            ORDER BY quality_score DESC
+            """
+            
+            cursor.execute(query)
+            rows = cursor.fetchall()
+            cursor.close()
+            conn.close()
+            
+            for row in rows:
+                face = Face(
+                    id=row[0],
+                    person_id=row[1],
+                    group_id=row[2],
+                    quality_score=row[3],
+                    image_id=row[4]
+                )
+                faces_by_group[face.group_id].append(face)
                     
-        except sqlite3.Error as e:
+        except Exception as e:
             logger.error(f"Database error: {e}")
             raise
             
@@ -92,20 +100,8 @@ class FaceCentroidGenerator:
         return sorted_faces[:top_k]
     
     def get_face_embeddings(self, face_ids: List[int], collection_name: str) -> Dict[int, np.ndarray]:
-        """
-        Retrieve face embeddings from Qdrant
-        
-        Args:
-            face_ids: List of face IDs (point IDs in Qdrant)
-            collection_name: Name of the Qdrant collection
-            
-        Returns:
-            Dictionary mapping face_id to embedding vector
-        """
         embeddings = {}
-        
         try:
-            # Retrieve points by IDs
             points = self.qdrant_client.retrieve(
                 collection_name=collection_name,
                 ids=face_ids,
@@ -113,15 +109,19 @@ class FaceCentroidGenerator:
             )
             
             for point in points:
-                if point.vector is not None:
-                    embeddings[point.id] = np.array(point.vector)
+                vec = point.vector
+                if vec is not None:
+                    # If named vector, take the first value
+                    if isinstance(vec, dict):
+                        vec = next(iter(vec.values()))
+                    embeddings[point.id] = np.array(vec, dtype=np.float32)
                 else:
                     logger.warning(f"No vector found for face ID {point.id}")
-                    
+                        
         except Exception as e:
             logger.error(f"Error retrieving embeddings from Qdrant: {e}")
             raise
-            
+                
         logger.info(f"Retrieved {len(embeddings)} embeddings from collection {collection_name}")
         return embeddings
     
@@ -162,6 +162,7 @@ class FaceCentroidGenerator:
             
             if collection_name in existing_names:
                 logger.info(f"Collection {collection_name} already exists")
+                self.qdrant_client.delete_collection(collection_name=collection_name)
                 return
                 
             # Create new collection
@@ -206,20 +207,22 @@ class FaceCentroidGenerator:
             raise
     
     def process_group(self, group_id: int, faces: List[Face], 
-                     source_collection: str = "faces", top_k: int = 5) -> Dict[int, np.ndarray]:
+                     top_k: int = 5) -> Dict[int, np.ndarray]:
         """
         Process faces for a specific group and generate person centroids
         
         Args:
             group_id: Group ID to process
             faces: List of Face objects for this group
-            source_collection: Source Qdrant collection name for face embeddings
             top_k: Number of top quality faces to use for centroid
             
         Returns:
             Dictionary mapping person_id to centroid embedding
         """
         logger.info(f"Processing group {group_id} with {len(faces)} faces")
+        
+        # The source collection is named after the group_id
+        source_collection = str(group_id)
         
         # Group faces by person_id
         faces_by_person = defaultdict(list)
@@ -237,7 +240,7 @@ class FaceCentroidGenerator:
             
             logger.info(f"Selected {len(top_faces)} top quality faces for person {person_id}")
             
-            # Get embeddings from Qdrant
+            # Get embeddings from Qdrant - using group_id as collection name
             embeddings_dict = self.get_face_embeddings(face_ids, source_collection)
             
             if len(embeddings_dict) < len(face_ids):
@@ -255,12 +258,11 @@ class FaceCentroidGenerator:
         
         return centroids
     
-    def generate_all_centroids(self, source_collection: str = "faces", top_k: int = 5):
+    def generate_all_centroids(self, top_k: int = 5):
         """
         Generate centroids for all groups and store them in respective collections
         
         Args:
-            source_collection: Source Qdrant collection name for face embeddings
             top_k: Number of top quality faces to use for centroid
         """
         # Get all faces grouped by group_id
@@ -273,14 +275,14 @@ class FaceCentroidGenerator:
             
             try:
                 # Process faces for this group
-                centroids = self.process_group(group_id, faces, source_collection, top_k)
+                centroids = self.process_group(group_id, faces, top_k)
                 
                 if not centroids:
                     logger.warning(f"No centroids generated for group {group_id}")
                     continue
                 
                 # Create collection for this group
-                collection_name = f"person_centroids_{group_id}"
+                collection_name = f"person_centroid_{group_id}"
                 
                 # Get vector size from first centroid
                 vector_size = len(next(iter(centroids.values())))
@@ -303,23 +305,19 @@ def main():
     """Main function to run the centroid generation process"""
     
     # Configuration
-    DB_PATH = "path/to/your/database.db"  # Update with your database path
     QDRANT_HOST = "localhost"
     QDRANT_PORT = 6333
-    SOURCE_COLLECTION = "faces"  # Qdrant collection containing face embeddings
     TOP_K_FACES = 5  # Number of top quality faces to use for centroid
     
     try:
         # Initialize the centroid generator
         generator = FaceCentroidGenerator(
-            db_path=DB_PATH,
             qdrant_host=QDRANT_HOST,
             qdrant_port=QDRANT_PORT
         )
         
         # Generate centroids for all groups
         generator.generate_all_centroids(
-            source_collection=SOURCE_COLLECTION,
             top_k=TOP_K_FACES
         )
         

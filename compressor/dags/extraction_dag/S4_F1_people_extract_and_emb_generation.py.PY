@@ -191,7 +191,7 @@ class DatabaseManager:
         """Fetch warm groups from database"""
         with get_db_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT id FROM groups WHERE status = 'warm'")
+                cur.execute("SELECT id FROM groups WHERE status = 'warm' order by last_processed_at")
                 return [row[0] for row in cur.fetchall()]
 
     @staticmethod
@@ -226,6 +226,25 @@ class DatabaseManager:
                 cur.execute(query, (image_ids,))
                 conn.commit()
                 logger.info(f"Marked {len(image_ids)} images as processed")
+                
+    @staticmethod
+    def mark_group_processed(group_id) -> None:
+        """Mark group_id as processed and clear image_byte"""
+        if not group_id:
+            return
+            
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                query = """
+                            UPDATE groups
+                            SET status = 'warming',
+                    last_processed_at = NOW(),
+                            last_processed_step = 'extraction'
+                            WHERE id = %s AND status = 'warm'
+                        """
+                cur.execute(query, (group_id,))
+                conn.commit()
+                logger.info(f"Marked {group_id} group_id as processed")
 
 class HybridFaceIndexer:
     def __init__(self):
@@ -516,6 +535,7 @@ def main():
         for group_id in groups:
             try:
                 process_group(group_id, indexer, yolo_model)
+                DatabaseManager.mark_group_processed(group_id)
             except Exception as e:
                 logger.error(f"Failed to process group {group_id}, continuing with next group: {e}")
                 continue

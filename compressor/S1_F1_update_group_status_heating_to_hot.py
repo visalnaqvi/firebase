@@ -3,12 +3,11 @@ from psycopg2.extras import RealDictCursor
 
 def get_db_connection():
     return psycopg2.connect(
-        host="ballast.proxy.rlwy.net",
-        port="56193",
-        dbname="railway",
+        host="localhost",
+        port="5432",
+        dbname="postgres",
         user="postgres",
-        password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
-        # better: read from env var in production
+        password="admin"
     )
 
 def main():

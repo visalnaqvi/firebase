@@ -57,40 +57,40 @@ async function processSingleImage(image) {
         console.log(`✅ Stored stripped Image ${id} to Firebase`);
 
         // Create 3000px version (or use original if already smaller)
-        let compressedBuffer;
-        if (originalWidth <= 3000) {
-            // Use stripped buffer as compressed since it's already <= 3000px
-            compressedBuffer = strippedBuffer;
-            console.log(`✅ Image ${id} is ${originalWidth}px wide(≤ 3000px), using original size`);
-        } else {
-            // Resize to 3000px
-            compressedBuffer = await sharp(strippedBuffer)
-                .resize({ width: 3000 })
-                .jpeg()
-                .toBuffer();
-            console.log(`✅ Resized Image ${id} from ${originalWidth}px to 3000px`);
-        }
+        // let compressedBuffer;
+        // if (originalWidth <= 3000) {
+        //     // Use stripped buffer as compressed since it's already <= 3000px
+        //     compressedBuffer = strippedBuffer;
+        //     console.log(`✅ Image ${id} is ${originalWidth}px wide(≤ 3000px), using original size`);
+        // } else {
+        //     // Resize to 3000px
+        //     compressedBuffer = await sharp(strippedBuffer)
+        //         .resize({ width: 3000 })
+        //         .jpeg()
+        //         .toBuffer();
+        //     console.log(`✅ Resized Image ${id} from ${originalWidth}px to 3000px`);
+        // }
 
-        const compressedPath = `compressed3 / ${fileName} `;
-        await bucket.file(compressedPath).save(compressedBuffer, {
-            contentType: 'image/jpeg',
-        });
-        console.log(`✅ Stored 3000px Image ${id} to Firebase`);
+        // const compressedPath = `compressed3 / ${fileName} `;
+        // await bucket.file(compressedPath).save(compressedBuffer, {
+        //     contentType: 'image/jpeg',
+        // });
+        // console.log(`✅ Stored 3000px Image ${id} to Firebase`);
 
-        // Create 400px thumbnail
-        const thumbBuffer = await sharp(strippedBuffer)
-            .resize({ width: 400 })
-            .jpeg()
-            .toBuffer();
-        console.log(`✅ Created 400px thumbnail for Image ${id}`);
+        // // Create 400px thumbnail
+        // const thumbBuffer = await sharp(strippedBuffer)
+        //     .resize({ width: 400 })
+        //     .jpeg()
+        //     .toBuffer();
+        // console.log(`✅ Created 400px thumbnail for Image ${id}`);
 
         return {
             id,
             success: true,
             data: {
                 json_meta_data: JSON.stringify(originalMeta),
-                thumb_byte: thumbBuffer,
-                image_byte: compressedBuffer,
+                thumb_byte: null,
+                image_byte: null,
                 status: 'warm'
             }
         };
@@ -99,7 +99,13 @@ async function processSingleImage(image) {
         return {
             id,
             success: false,
-            error: error.message
+            error: error.message,
+            data: {
+                json_meta_data: null,
+                thumb_byte: null,
+                image_byte: null,
+                status: 'warm_failed'
+            }
         };
     }
 }
@@ -145,7 +151,8 @@ async function performBatchUpdate(client, successfulResults) {
         SET status = data.status,
     json_meta_data = data.json_meta_data,
     thumb_byte = data.thumb_byte,
-    image_byte = data.image_byte
+    image_byte = data.image_byte,
+    last_processed_at = NOW()
 FROM(VALUES ${valuesClauses.join(', ')}) AS data(id, status, json_meta_data, thumb_byte, image_byte)
         WHERE images.id = data.id
     `;
@@ -244,7 +251,8 @@ async function updateDatabaseBatch(client, results) {
 
         // Begin transaction for batch update
         await client.query('BEGIN');
-        await performBatchUpdate(client, successfulResults);
+        await performBatchUpdate(client, successfulResults, "success");
+        await performBatchUpdate(client, failedResults, "failure");
         await client.query('COMMIT');
 
     } catch (batchError) {
@@ -351,7 +359,7 @@ async function fetchAllHotImages(client, groupId) {
     const { rows } = await client.query(
         `SELECT id, location, group_id FROM images 
          WHERE status = 'hot' AND group_id = $1 
-         ORDER BY id`,
+         ORDER BY id limit 100`,
         [groupId]
     );
     return rows;
@@ -400,41 +408,50 @@ async function processImagesBatches(client, images, groupId) {
 // Process a single group with batching
 async function processGroup(client, groupId) {
     console.log(`🔃 Starting processing for group ${groupId}`);
+    let totalProcessedFinal = []
+    let totalFailedFinal = []
+    while (true) {
+        console.log(`🔃 Fetching all hot images for group ${groupId}`);
+        const allImages = await fetchAllHotImages(client, groupId);
 
-    // Fetch ALL hot images for this group at once
-    console.log(`🔃 Fetching all hot images for group ${groupId}`);
-    const allImages = await fetchAllHotImages(client, groupId);
+        if (allImages.length === 0) {
+            console.log(`✅ No hot images found for group ${groupId}`);
+            break;
+        }
 
-    if (allImages.length === 0) {
-        console.log(`✅ No hot images found for group ${groupId}`);
-        return 0;
+        console.log(`✅ Fetched ${allImages.length} hot images for group ${groupId}`);
+
+        // Process all images in batches with database updates after each batch
+        const { totalProcessed, totalFailed } = await processImagesBatches(client, allImages, groupId);
+        totalProcessedFinal.push(totalProcessed)
+        totalFailedFinal.push(totalFailed)
+        console.log(`✅ Completed processing for group ${groupId}. Total: ${totalProcessed}/${allImages.length} processed successfully, ${totalFailed} failed`);
     }
-
-    console.log(`✅ Fetched ${allImages.length} hot images for group ${groupId}`);
-
-    // Process all images in batches with database updates after each batch
-    const { totalProcessed, totalFailed } = await processImagesBatches(client, allImages, groupId);
-
-    console.log(`✅ Completed processing for group ${groupId}. Total: ${totalProcessed}/${allImages.length} processed successfully, ${totalFailed} failed`);
-
-    return totalProcessed;
+    // Fetch ALL hot images for this group at once
+    return { totalProcessedFinal, totalFailedFinal };
 }
 
 async function processImages() {
     const client = await pool.connect();
     try {
-        console.log("🔃 Getting hot groups to process images");
-        const { rows: groupRows } = await client.query(`SELECT id FROM groups WHERE status = 'hot'`);
-        console.log(`✅ Found ${groupRows.length} hot groups`);
+        while (true) {
+            console.log("🔃 Getting hot groups to process images");
+            const { rows: groupRows } = await client.query(`SELECT id FROM groups WHERE status = 'heating' and last_image_uploaded_at is not null order by last_image_uploaded_at LIMIT 1`);
+            console.log(`✅ Found ${groupRows.length} hot groups`);
 
-        let totalProcessedAllGroups = 0;
+            let totalProcessedAllGroups = 0;
+            if (groupRows.length == 0) {
+                console.log("No Groups to process exiting")
+                break;
+            }
+            for (const group of groupRows) {
+                const processedCount = await processGroup(client, group.id);
+                totalProcessedAllGroups += processedCount;
+            }
 
-        for (const group of groupRows) {
-            const processedCount = await processGroup(client, group.id);
-            totalProcessedAllGroups += processedCount;
+            console.log(`🎉 Processing complete! Total images processed: ${totalProcessedAllGroups}`);
         }
 
-        console.log(`🎉 Processing complete! Total images processed: ${totalProcessedAllGroups}`);
 
     } catch (err) {
         console.error('❌ Error processing images:', err);
@@ -445,4 +462,3 @@ async function processImages() {
     }
 }
 processImages();
-module.exports = { processImages };

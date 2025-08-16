@@ -480,13 +480,30 @@ class SimplifiedFaceGrouping:
             # if remaining_count == initial_count:
             #     print("⚠️ No progress made, stopping to avoid infinite loop")
             #     break
-
+    def mark_group_processed(self , group_id) -> None:
+        """Mark group_id as processed and clear image_byte"""
+        if not group_id:
+            return
+            
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                query = """
+                            UPDATE groups
+                            SET status = 'warmed',
+                    last_processed_at = NOW(),
+                            last_processed_step = 'grouping'
+                            WHERE id = %s AND status = 'warming'
+                        """
+                cur.execute(query, (group_id,))
+                conn.commit()
+                print(f"Marked {group_id} group_id as processed")
+                
     def process_all_groups(self, batch_size=10):
-        """Process all warmed groups"""
-        # Get all warmed groups
+        """Process all warming groups"""
+        # Get all warming groups
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=DictCursor)
-        cursor.execute("SELECT id FROM groups WHERE status = 'warmed'")
+        cursor.execute("SELECT id FROM groups WHERE status = 'warming' order by last_processed_at")
         groups = cursor.fetchall()
         cursor.close()
         conn.close()
@@ -497,6 +514,7 @@ class SimplifiedFaceGrouping:
         for group_id in group_ids:
             try:
                 self.process_unassigned_faces(group_id, batch_size)
+                self.mark_group_processed(group_id)
                 print(f"✅ Completed group {group_id}")
             except Exception as e:
                 print(f"❌ Error processing group {group_id}: {e}")

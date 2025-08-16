@@ -19,37 +19,35 @@ def get_db_connection():
         password="admin"
     )
 
-# Create table if not exists
-def ensure_similar_faces_table():
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        DROP TABLE similar_faces;
-    """)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS similar_faces (
-                    id SERIAL PRIMARY KEY,
-                    group_id VARCHAR(255),
-                    person_id VARCHAR(255),
-                    similar_person_id VARCHAR(255));
-    """)
-    conn.commit()
-    conn.close()
-    logger.info("Ensured similar_faces table exists")
-
 # Get distinct person_id, group_id pairs
-def get_unique_persons():
+def get_unique_persons(group_id):
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute("""
-        SELECT DISTINCT person_id, group_id
+        SELECT DISTINCT person_id
         FROM faces
-        WHERE person_id IS NOT NULL
-    """)
+        WHERE person_id IS NOT NULL and group_id = %s
+    """ , (group_id,))
     results = cur.fetchall()
     conn.close()
     logger.info(f"Retrieved {len(results)} unique (person_id, group_id) pairs")
-    return results
+    return [item[0] for item in results]
+
+def get_warmed_groups():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT DISTINCT id
+        FROM groups
+        WHERE status = 'warmed'
+    """)
+    results = cur.fetchall()  # e.g., [(1,), (2,), (3,)]
+    conn.close()
+    logger.info(f"Retrieved {len(results)} unique ids")
+    
+    # Extract ids from the tuples
+    ids = [item[0] for item in results]
+    return ids
 
 # Fetch vector for given person from Qdrant
 def get_person_vector(qdrant_client, collection_name, person_id):
@@ -101,25 +99,26 @@ def insert_similar_faces(pairs):
     logger.info(f"Inserted {len(pairs)} similar face records")
 
 def main():
-    ensure_similar_faces_table()
 
     qdrant_client = QdrantClient(host="localhost", port=6333)
+    groups = get_warmed_groups()
+    for group_id in groups:
+        persons = get_unique_persons(group_id)
+        all_pairs = []
+        
+        for person_id in persons:
+            collection_name = f"person_centroid_{group_id}"
+            vector = get_person_vector(qdrant_client, collection_name, person_id)
+            if vector is None:
+                logger.warning(f"No vector found for person_id={person_id} in group_id={group_id}")
+                continue
 
-    persons = get_unique_persons()
-    all_pairs = []
+            similar_ids = find_similar(qdrant_client, collection_name, vector, person_id, threshold=0.5)
+            for sim_id in similar_ids:
+                all_pairs.append((person_id, sim_id))
 
-    for person_id, group_id in persons:
-        collection_name = f"person_centroid_{group_id}"
-        vector = get_person_vector(qdrant_client, collection_name, person_id)
-        if vector is None:
-            logger.warning(f"No vector found for person_id={person_id} in group_id={group_id}")
-            continue
-
-        similar_ids = find_similar(qdrant_client, collection_name, vector, person_id, threshold=0.5)
-        for sim_id in similar_ids:
-            all_pairs.append((person_id, sim_id))
-
-    insert_similar_faces(all_pairs)
+        insert_similar_faces(all_pairs)
+        logger.info(f"Similarity check completed for group {group_id}")
     logger.info("Similarity check completed")
 
 if __name__ == "__main__":

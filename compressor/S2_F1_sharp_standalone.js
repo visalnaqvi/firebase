@@ -50,47 +50,47 @@ async function processSingleImage(image) {
         console.log(`✅ Stripped metadata for Image ${id}`);
 
         // Upload stripped image
-        const strippedPath = `stripped / ${fileName} `;
+        const strippedPath = `${fileName} `;
         await bucket.file(strippedPath).save(strippedBuffer, {
             contentType: 'image/jpeg',
         });
         console.log(`✅ Stored stripped Image ${id} to Firebase`);
 
         // Create 3000px version (or use original if already smaller)
-        let compressedBuffer;
-        if (originalWidth <= 3000) {
-            // Use stripped buffer as compressed since it's already <= 3000px
-            compressedBuffer = strippedBuffer;
-            console.log(`✅ Image ${id} is ${originalWidth}px wide(≤ 3000px), using original size`);
-        } else {
-            // Resize to 3000px
-            compressedBuffer = await sharp(strippedBuffer)
-                .resize({ width: 3000 })
-                .jpeg()
-                .toBuffer();
-            console.log(`✅ Resized Image ${id} from ${originalWidth}px to 3000px`);
-        }
+        // let compressedBuffer;
+        // if (originalWidth <= 3000) {
+        //     // Use stripped buffer as compressed since it's already <= 3000px
+        //     compressedBuffer = strippedBuffer;
+        //     console.log(`✅ Image ${id} is ${originalWidth}px wide(≤ 3000px), using original size`);
+        // } else {
+        //     // Resize to 3000px
+        //     compressedBuffer = await sharp(strippedBuffer)
+        //         .resize({ width: 3000 })
+        //         .jpeg()
+        //         .toBuffer();
+        //     console.log(`✅ Resized Image ${id} from ${originalWidth}px to 3000px`);
+        // }
 
-        const compressedPath = `compressed3 / ${fileName} `;
-        await bucket.file(compressedPath).save(compressedBuffer, {
-            contentType: 'image/jpeg',
-        });
-        console.log(`✅ Stored 3000px Image ${id} to Firebase`);
+        // const compressedPath = `compressed3 / ${fileName} `;
+        // await bucket.file(compressedPath).save(compressedBuffer, {
+        //     contentType: 'image/jpeg',
+        // });
+        // console.log(`✅ Stored 3000px Image ${id} to Firebase`);
 
         // Create 400px thumbnail
-        const thumbBuffer = await sharp(strippedBuffer)
-            .resize({ width: 400 })
-            .jpeg()
-            .toBuffer();
-        console.log(`✅ Created 400px thumbnail for Image ${id}`);
+        // const thumbBuffer = await sharp(strippedBuffer)
+        //     .resize({ width: 400 })
+        //     .jpeg()
+        //     .toBuffer();
+        // console.log(`✅ Created 400px thumbnail for Image ${id}`);
 
         return {
             id,
             success: true,
             data: {
                 json_meta_data: JSON.stringify(originalMeta),
-                thumb_byte: thumbBuffer,
-                image_byte: compressedBuffer,
+                thumb_byte: null,
+                image_byte: null,
                 status: 'warm'
             }
         };
@@ -420,23 +420,17 @@ async function processGroup(client, groupId) {
     return totalProcessed;
 }
 
-async function processImages() {
+async function processImages(group_id) {
     const client = await pool.connect();
     try {
-        console.log("🔃 Getting hot groups to process images");
-        const { rows: groupRows } = await client.query(`SELECT id FROM groups WHERE status = 'hot'`);
-        console.log(`✅ Found ${groupRows.length} hot groups`);
+        console.log(`Processing!`);
 
-        let totalProcessedAllGroups = 0;
-
-        for (const group of groupRows) {
-            const processedCount = await processGroup(client, group.id);
-            totalProcessedAllGroups += processedCount;
-        }
-
+        const processedCount = await processGroup(client, group_id);
+        totalProcessedAllGroups += processedCount;
         console.log(`🎉 Processing complete! Total images processed: ${totalProcessedAllGroups}`);
 
-    } catch (err) {
+    }
+    catch (err) {
         console.error('❌ Error processing images:', err);
     } finally {
         client.release();
@@ -444,5 +438,4 @@ async function processImages() {
         process.exit();
     }
 }
-processImages();
 module.exports = { processImages };

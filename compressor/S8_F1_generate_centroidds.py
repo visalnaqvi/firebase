@@ -25,22 +25,6 @@ def get_db_connection():
     )
 
 
-def ensure_persons_table():
-    """Ensure persons table exists"""
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS persons (
-            id UUID PRIMARY KEY,
-            face_thumb_bytes BYTEA
-        )
-    """)
-    conn.commit()
-    cur.close()
-    conn.close()
-    logging.info("Ensured persons table exists")
-
-
 def get_warmed_groups():
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=DictCursor)
@@ -68,24 +52,6 @@ def get_best_faces_for_group(group_id):
     return res
 
 
-def update_persons_table(best_faces):
-    """Upsert best face thumb bytes into persons table"""
-    conn = get_db_connection()
-    cur = conn.cursor()
-    for face in best_faces:
-        person_id = face["person_id"]
-        thumb_bytes = face["face_thumb_bytes"]
-        cur.execute("""
-            INSERT INTO persons (id, face_thumb_bytes)
-            VALUES (%s, %s)
-            ON CONFLICT (id) DO UPDATE
-            SET face_thumb_bytes = EXCLUDED.face_thumb_bytes
-        """, (person_id, thumb_bytes))
-    conn.commit()
-    cur.close()
-    conn.close()
-    logging.info(f"Updated {len(best_faces)} persons in persons table")
-
 
 def ensure_person_centroid_collection(group_id, vector_size):
     """Ensure person_centroid_<group_id> exists"""
@@ -107,7 +73,6 @@ def process_group(group_id):
         return
 
     # Update persons table with best face thumbs
-    update_persons_table(best_faces)
 
     # Get embedding size from first point
     first_face_id = best_faces[0]["id"]
@@ -153,7 +118,6 @@ def process_group(group_id):
 
 
 def main():
-    ensure_persons_table()
     groups = get_warmed_groups()
     logging.info(f"Found warmed groups: {groups}")
 

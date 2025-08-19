@@ -32,6 +32,7 @@ TABLES = [
     CREATE TABLE IF NOT EXISTS public."groups" (
         id SERIAL PRIMARY KEY,
         "name" text NOT NULL,
+        "profile_pic_location" text NOT NULL,
         status text NOT NULL,
         total_images int4 NULL,
         total_size int8 NULL,

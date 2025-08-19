@@ -43,7 +43,7 @@ class FaceCentroidGenerator:
         """
         self.qdrant_client = QdrantClient(host=qdrant_host, port=qdrant_port)
         
-    def get_faces_by_group(self , group_id) -> Dict[str, List[Face]]:
+    def get_faces_by_group(self) -> Dict[str, List[Face]]:
         """
         Retrieve all faces grouped by group_id from database
         
@@ -58,11 +58,11 @@ class FaceCentroidGenerator:
                 
             query = """
             SELECT id, person_id, group_id, quality_score, image_id
-            FROM faces where group_id = %s
+            FROM faces
             ORDER BY quality_score DESC
             """
             
-            cursor.execute(query  , group_id)
+            cursor.execute(query)
             rows = cursor.fetchall()
             cursor.close()
             conn.close()
@@ -257,23 +257,7 @@ class FaceCentroidGenerator:
                 logger.warning(f"No embeddings found for person {person_id}, skipping centroid generation")
         
         return centroids
-    def mark_group_processed(self , group_id) -> None:
-        """Mark group_id as processed and clear image_byte"""
-        if not group_id:
-            return
-            
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                query = """
-                            UPDATE groups
-                            SET status = 'cooling',
-                    last_processed_at = NOW(),
-                            last_processed_step = 'centroid'
-                            WHERE id = %s AND status = 'warmed'
-                        """
-                cur.execute(query, (group_id,))
-                conn.commit()
-                print(f"Marked {group_id} group_id as processed")
+    
     def generate_all_centroids(self, top_k: int = 5):
         """
         Generate centroids for all groups and store them in respective collections
@@ -281,43 +265,34 @@ class FaceCentroidGenerator:
         Args:
             top_k: Number of top quality faces to use for centroid
         """
-        
-        conn = get_db_connection()
-        cursor = conn.cursor(cursor_factory=DictCursor)
-        cursor.execute("SELECT id FROM groups WHERE status = 'warmed' order by last_processed_at")
-        groups = cursor.fetchall()
-        cursor.close()
-        conn.close()
         # Get all faces grouped by group_id
-        group_ids = [row["id"] for row in groups]
+        faces_by_group = self.get_faces_by_group()
         
-        for group_id in group_ids:
+        for group_id, faces in faces_by_group.items():
             logger.info(f"\n{'='*50}")
             logger.info(f"Processing Group {group_id}")
             logger.info(f"{'='*50}")
             
             try:
-                faces_by_group = self.get_faces_by_group(group_id)
-                for group_id, faces in faces_by_group:
-                    # Process faces for this group
-                    centroids = self.process_group(group_id, faces, top_k)
-                    
-                    if not centroids:
-                        logger.warning(f"No centroids generated for group {group_id}")
-                        continue
-                    
-                    # Create collection for this group
-                    collection_name = f"person_centroid_{group_id}"
-                    
-                    # Get vector size from first centroid
-                    vector_size = len(next(iter(centroids.values())))
-                    self.create_centroid_collection(collection_name, vector_size)
-                    
-                    # Store centroids
-                    self.store_centroids(collection_name, centroids)
-                    
-                    logger.info(f"Successfully processed group {group_id}: {len(centroids)} person centroids stored")
-                    self.mark_group_processed(group_id)
+                # Process faces for this group
+                centroids = self.process_group(group_id, faces, top_k)
+                
+                if not centroids:
+                    logger.warning(f"No centroids generated for group {group_id}")
+                    continue
+                
+                # Create collection for this group
+                collection_name = f"person_centroid_{group_id}"
+                
+                # Get vector size from first centroid
+                vector_size = len(next(iter(centroids.values())))
+                self.create_centroid_collection(collection_name, vector_size)
+                
+                # Store centroids
+                self.store_centroids(collection_name, centroids)
+                
+                logger.info(f"Successfully processed group {group_id}: {len(centroids)} person centroids stored")
+                
             except Exception as e:
                 logger.error(f"Error processing group {group_id}: {e}")
                 continue

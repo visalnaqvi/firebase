@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import List, Tuple, Optional, Generator
 import logging
+import requests
 from PIL import Image
 from ultralytics import YOLO
 from insightface.app import FaceAnalysis
@@ -181,7 +182,7 @@ class DatabaseManager:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT id, image_byte FROM images WHERE status = 'warm' AND group_id = %s LIMIT %s", 
+                    "SELECT id, location FROM images WHERE status = 'warm' AND group_id = %s LIMIT %s", 
                     (group_id, batch_size)
                 )
                 return cur.fetchall()
@@ -191,8 +192,42 @@ class DatabaseManager:
         """Fetch warm groups from database"""
         with get_db_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT id FROM groups WHERE status = 'warm' order by last_processed_at")
+                cur.execute("SELECT id FROM groups WHERE status = 'warm' order by last_processed_at limit 1")
                 return [row[0] for row in cur.fetchall()]
+    @staticmethod
+    def mark_group_processed(group_id) -> None:
+        """Mark group_id as processed and clear image_byte"""
+        if not group_id:
+            return
+            
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                query = """
+                            UPDATE groups
+                            SET status = 'warming',
+                    last_processed_at = NOW(),
+                            last_processed_step = 'extraction'
+                            WHERE id = %s AND status = 'warm'
+                        """
+                cur.execute(query, (group_id,))
+                conn.commit()
+                logger.info(f"Marked {group_id} group_id as processed")            
+    @staticmethod
+    def mark_group_process_status(group_id) -> None:
+        """Mark group_id as processed and clear image_byte"""
+        if not group_id:
+            return
+            
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                query = """
+                            UPDATE process_status
+                            SET group_id = %s
+                            WHERE status = 'extraction'
+                        """
+                cur.execute(query, (group_id,))
+                conn.commit()
+                logger.info(f"Marked {group_id} group_id as processed")
 
     @staticmethod
     def insert_faces_batch(records: List[dict], group_id: int) -> None:
@@ -222,29 +257,10 @@ class DatabaseManager:
             
         with get_db_connection() as conn:
             with conn.cursor() as cur:
-                query = "UPDATE images SET status = 'warming' WHERE id = ANY(%s)"
+                query = "UPDATE images SET status = 'warming' WHERE id = ANY(%s::uuid[])"
                 cur.execute(query, (image_ids,))
                 conn.commit()
                 logger.info(f"Marked {len(image_ids)} images as processed")
-                
-    @staticmethod
-    def mark_group_processed(group_id) -> None:
-        """Mark group_id as processed and clear image_byte"""
-        if not group_id:
-            return
-            
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                query = """
-                            UPDATE groups
-                            SET status = 'warming',
-                    last_processed_at = NOW(),
-                            last_processed_step = 'extraction'
-                            WHERE id = %s AND status = 'warm'
-                        """
-                cur.execute(query, (group_id,))
-                conn.commit()
-                logger.info(f"Marked {group_id} group_id as processed")
 
 class HybridFaceIndexer:
     def __init__(self):
@@ -334,14 +350,25 @@ class HybridFaceIndexer:
         except Exception as e:
             logger.error(f"Failed to convert image to bytes: {e}")
             raise
-
-    def process_image(self, image_id: int, image_bytes: bytes, yolo_model, collection_name: str) -> List[dict]:
+    def read_image_from_url(self , url: str):
+            # Download the image
+            response = requests.get(url, stream=True)
+            response.raise_for_status()  # will throw error if invalid
+            
+            # Convert to numpy array
+            image_array = np.asarray(bytearray(response.content), dtype=np.uint8)
+            
+            # Decode to OpenCV image (BGR format)
+            img = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
+            
+            return img   
+    def process_image(self, image_id: int, location, yolo_model, collection_name: str) -> List[dict]:
         """Process single image with comprehensive error handling"""
         try:
             # Decode image
-            nparr = np.frombuffer(image_bytes, np.uint8)
-            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-            
+            # nparr = np.frombuffer(image_bytes, np.uint8)
+            # img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            img = self.read_image_from_url(location)
             if img is None:
                 logger.warning(f"Failed to decode image {image_id}")
                 return []
@@ -454,8 +481,8 @@ class HybridFaceIndexer:
         
         with concurrent.futures.ThreadPoolExecutor(max_workers=config.PARALLEL_LIMIT) as executor:
             futures = {
-                executor.submit(self.process_image, img_id, img_bytes, yolo_model, collection_name): img_id
-                for img_id, img_bytes in images_batch
+                executor.submit(self.process_image, img_id, location, yolo_model, collection_name): img_id
+                for img_id, location in images_batch
             }
             
             for future in concurrent.futures.as_completed(futures):
@@ -515,36 +542,45 @@ def process_group(group_id: int, indexer: HybridFaceIndexer, yolo_model) -> None
 
 def main():
     """Main execution function with proper error handling"""
-    try:
-        # Initialize models
-        logger.info("Initializing YOLO model...")
-        yolo_model = YOLO("yolov8x.pt")
+           # Initialize models
+    logger.info("Initializing YOLO model...")
+    yolo_model = YOLO("yolov8x.pt")
+    
+    logger.info("Initializing face indexer...")
+    indexer = HybridFaceIndexer()
+    while True:
+        try:
+     
+            
+            
+            # Fetch groups to process
+            groups = DatabaseManager.fetch_warm_groups()
+            logger.info(f"Found {len(groups)} warm groups to process")
+            if not groups or len(groups) == 0:
+                break
+            
+            if not groups:
+                logger.info("No warm groups found, exiting")
+                return
+            
+            # Process each group
+            for group_id in groups:
+                try:
+                    DatabaseManager.mark_group_process_status(group_id)
+                    process_group(group_id, indexer, yolo_model)
+                    DatabaseManager.mark_group_processed(group_id)
+                    DatabaseManager.mark_group_process_status(0)
+                except Exception as e:
+                    logger.error(f"Failed to process group {group_id}, continuing with next group: {e}")
+                    continue
+            
+            logger.info("Processing completed successfully")
         
-        logger.info("Initializing face indexer...")
-        indexer = HybridFaceIndexer()
+        except Exception as e:
+            logger.error(f"Critical error in main execution: {e}")
+            raise
         
-        # Fetch groups to process
-        groups = DatabaseManager.fetch_warm_groups()
-        logger.info(f"Found {len(groups)} warm groups to process")
-        
-        if not groups:
-            logger.info("No warm groups found, exiting")
-            return
-        
-        # Process each group
-        for group_id in groups:
-            try:
-                process_group(group_id, indexer, yolo_model)
-                DatabaseManager.mark_group_processed(group_id)
-            except Exception as e:
-                logger.error(f"Failed to process group {group_id}, continuing with next group: {e}")
-                continue
-        
-        logger.info("Processing completed successfully")
-        
-    except Exception as e:
-        logger.error(f"Critical error in main execution: {e}")
-        raise
+    
 
 if __name__ == "__main__":
     main()

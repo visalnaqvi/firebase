@@ -14,7 +14,7 @@ admin.initializeApp({
 const bucket = admin.storage().bucket();
 
 const pool = new Pool({
-    connectionString: "postgresql://postgres:admin@localhost:5432/postgres"
+    connectionString: "postgresql://postgres:AfldldzckDWtkskkAMEhMaDXnMqknaPY@ballast.proxy.rlwy.net:56193/railway"
 });
 
 // Configuration
@@ -50,7 +50,7 @@ async function processSingleImage(image) {
         console.log(`✅ Stripped metadata for Image ${id}`);
 
         // Upload stripped image
-        const strippedPath = `stripped / ${fileName} `;
+        const strippedPath = `${fileName} `;
         await bucket.file(strippedPath).save(strippedBuffer, {
             contentType: 'image/jpeg',
         });
@@ -77,7 +77,7 @@ async function processSingleImage(image) {
         // });
         // console.log(`✅ Stored 3000px Image ${id} to Firebase`);
 
-        // // Create 400px thumbnail
+        // Create 400px thumbnail
         // const thumbBuffer = await sharp(strippedBuffer)
         //     .resize({ width: 400 })
         //     .jpeg()
@@ -99,12 +99,7 @@ async function processSingleImage(image) {
         return {
             id,
             success: false,
-            data: {
-                json_meta_data: JSON.stringify(originalMeta),
-                thumb_byte: null,
-                image_byte: null,
-                status: 'warm_failed'
-            }
+            error: error.message
         };
     }
 }
@@ -425,38 +420,22 @@ async function processGroup(client, groupId) {
     return totalProcessed;
 }
 
-async function processImages() {
+async function processImages(group_id) {
     const client = await pool.connect();
-    while (true) {
-        try {
-            console.log("🔃 Getting hot groups to process images");
-            const { rows: groupRows } = await client.query(`SELECT group_id
-  FROM images
-  WHERE status = 'hot'
-  ORDER BY uploaded_at ASC
-  LIMIT 1`);
-            console.log(`✅ Found ${groupRows.length} hot groups`);
+    try {
+        console.log(`Processing!`);
 
-            let totalProcessedAllGroups = 0;
-            if (groupRows.length == 0) {
-                console.log("No groups to process")
-                break;
-            }
-            for (const group of groupRows) {
-                const processedCount = await processGroup(client, group.group_id);
-                totalProcessedAllGroups += processedCount;
-            }
+        const processedCount = await processGroup(client, group_id);
+        totalProcessedAllGroups += processedCount;
+        console.log(`🎉 Processing complete! Total images processed: ${totalProcessedAllGroups}`);
 
-            console.log(`🎉 Processing complete! Total images processed: ${totalProcessedAllGroups}`);
-
-        } catch (err) {
-            console.error('❌ Error processing images:', err);
-        } finally {
-            client.release();
-            await pool.end();
-            process.exit();
-        }
     }
-
+    catch (err) {
+        console.error('❌ Error processing images:', err);
+    } finally {
+        client.release();
+        await pool.end();
+        process.exit();
+    }
 }
-processImages();
+module.exports = { processImages };

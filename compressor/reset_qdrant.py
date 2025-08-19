@@ -6,7 +6,7 @@ client = QdrantClient(
     api_key=None  # Add API key if required
 )
 
-collection_name = "4"
+collection_name = "1"
 
 # Step 1: Get all point IDs
 scroll_filter = None

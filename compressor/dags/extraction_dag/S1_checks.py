@@ -21,7 +21,7 @@ TABLES = [
         assigned bool NULL,
         image_id uuid NOT NULL,
         group_id int NOT NULL,
-        person_id int NULL,
+        person_id uuid NULL,
         cropped_img_byte bytea NULL,
         face_thumb_bytes bytea NULL,
         created_at timestamp NULL,
@@ -87,24 +87,14 @@ TABLES = [
     """,
     # Trigger function to send notification
     """
-    CREATE OR REPLACE FUNCTION notify_group_status_change()
-    RETURNS trigger AS $$
-    BEGIN
-        RAISE NOTICE 'Trigger fired: OLD.status=%, NEW.status=%', OLD.status, NEW.status;
-        IF NEW.status = 'heating' AND OLD.status IS DISTINCT FROM NEW.status THEN
-            PERFORM pg_notify('group_status_channel', NEW.id::text);
-        END IF;
-        RETURN NEW;
-    END;
-    $$ LANGUAGE plpgsql;
+    CREATE TABLE process_status (
+    group_id INT,
+    status TEXT
+);
     """,
-    # Trigger itself
     """
-    DROP TRIGGER IF EXISTS group_status_trigger ON public."groups";
-    CREATE TRIGGER group_status_trigger
-    AFTER UPDATE OF status ON public."groups"
-    FOR EACH ROW
-    EXECUTE FUNCTION notify_group_status_change();
+    INSERT INTO process_status (group_id, status)
+VALUES (NULL, 'extraction');
     """
 ]
 

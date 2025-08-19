@@ -33,13 +33,13 @@ def get_unique_persons(group_id):
     logger.info(f"Retrieved {len(results)} unique (person_id, group_id) pairs")
     return [item[0] for item in results]
 
-def get_cooling_groups():
+def get_warmed_groups():
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute("""
-        SELECT DISTINCT id , last_processed_at
+        SELECT DISTINCT id
         FROM groups
-        WHERE status = 'cooling' and last_processed_step = 'centroid' order by last_processed_at
+        WHERE status = 'warmed'
     """)
     results = cur.fetchall()  # e.g., [(1,), (2,), (3,)]
     conn.close()
@@ -83,22 +83,7 @@ def find_similar(qdrant_client, collection_name, vector, person_id, threshold, t
     except Exception as e:
         logger.error(f"Error searching similar persons for {person_id} in {collection_name}: {e}")
         return []
-def mark_group_processed(group_id) -> None:
-        """Mark group_id as processed and clear image_byte"""
-        if not group_id:
-            return
-            
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                query = """
-                            UPDATE groups
-                    set last_processed_at = NOW(),
-                            last_processed_step = 'similarity'
-                            WHERE id = %s AND status = 'cooling'
-                        """
-                cur.execute(query, (group_id,))
-                conn.commit()
-                print(f"Marked {group_id} group_id as processed")
+
 # Insert into similar_faces table
 def insert_similar_faces(pairs):
     if not pairs:
@@ -116,7 +101,7 @@ def insert_similar_faces(pairs):
 def main():
 
     qdrant_client = QdrantClient(host="localhost", port=6333)
-    groups = get_cooling_groups()
+    groups = get_warmed_groups()
     for group_id in groups:
         persons = get_unique_persons(group_id)
         all_pairs = []
@@ -133,7 +118,6 @@ def main():
                 all_pairs.append((person_id, sim_id))
 
         insert_similar_faces(all_pairs)
-        mark_group_processed(group_id)
         logger.info(f"Similarity check completed for group {group_id}")
     logger.info("Similarity check completed")
 

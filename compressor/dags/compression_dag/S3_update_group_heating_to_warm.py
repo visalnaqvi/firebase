@@ -4,10 +4,10 @@ from datetime import datetime, timedelta
 
 def update_groups_to_warm():
     conn = psycopg2.connect(
-        dbname="your_db",
-        user="your_user",
-        password="your_password",
-        host="your_host",
+        dbname="postgres",
+        user="postgres",
+        password="admin",
+        host="localhost",
         port="5432"
     )
     conn.autocommit = True
@@ -27,7 +27,7 @@ def update_groups_to_warm():
         # Step 2: Check if all images meet the condition
         cur.execute("""
             SELECT 
-                COUNT(*) FILTER (WHERE status = 'warm' AND last_processed_at <= NOW() - INTERVAL '1 hour') AS valid_images,
+                COUNT(*) FILTER (WHERE status = 'warm' AND last_processed_at <= NOW() - INTERVAL '1 minutes') AS valid_images,
                 COUNT(*) AS total_images
             FROM images
             WHERE group_id = %s
@@ -42,8 +42,7 @@ def update_groups_to_warm():
             cur.execute("""
                 UPDATE groups
                 SET status = 'warm',
-                    last_processed_at = NOW(),
-                    last_processed_step = 'compression'
+                    last_processed_at = NOW()
                 WHERE id = %s
             """, (group_id,))
             print(f"✅ Group {group_id} updated to warm")

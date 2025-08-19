@@ -28,8 +28,8 @@ def get_db_connection():
 def get_warmed_groups():
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=DictCursor)
-    cur.execute("SELECT id FROM groups WHERE status = 'warmed' order by last_processed_at")
-    result = [row["id"] for row in cur.fetchall()]
+    cur.execute("SELECT id AS group_id FROM groups WHERE status = 'warmed'")
+    result = [row["group_id"] for row in cur.fetchall()]
     cur.close()
     conn.close()
     return result
@@ -116,35 +116,14 @@ def process_group(group_id):
         qdrant.upsert(collection_name=target_collection, points=points_to_upsert)
         logging.info(f"Upserted {len(points_to_upsert)} person centroids into {target_collection}")
 
-def mark_group_processed(group_id) -> None:
-        """Mark group_id as processed and clear image_byte"""
-        if not group_id:
-            return
-            
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                query = """
-                            UPDATE groups
-                            SET status = 'cooling',
-                    last_processed_at = NOW(),
-                            last_processed_step = 'centroid'
-                            WHERE id = %s AND status = 'warmed'
-                        """
-                cur.execute(query, (group_id,))
-                conn.commit()
-                print(f"Marked {group_id} group_id as processed")
-def main():
-    while True:
-        groups = get_warmed_groups()
-        if not groups or len(groups) == 0:
-            print("Founf No Groups")
-            break
-        logging.info(f"Found warmed groups: {groups}")
 
-        for group_id in groups:
-            logging.info(f"Processing group {group_id}")
-            process_group(group_id)
-            mark_group_processed(group_id)
+def main():
+    groups = get_warmed_groups()
+    logging.info(f"Found warmed groups: {groups}")
+
+    for group_id in groups:
+        logging.info(f"Processing group {group_id}")
+        process_group(group_id)
 
 
 if __name__ == "__main__":

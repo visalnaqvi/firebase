@@ -5,8 +5,7 @@ const axios = require('axios');
 const path = require('path');
 const { URL } = require('url');
 const serviceAccount = require('./firebase-key.json');
-
-
+const exifParser = require('exif-parser')
 admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
     storageBucket: 'gallery-585ee.firebasestorage.app',
@@ -27,71 +26,90 @@ function getFileNameFromURL(url) {
 }
 
 // Process a single image
-async function processSingleImage(image) {
+async function processSingleImage(image, planType) {
     const { id, location, group_id } = image;
     console.log(`🔃 Processing Image ${id} for group ${group_id}`);
 
     try {
-        const fileName = getFileNameFromURL(location);
-        console.log(`🔧 Processing image ${fileName} `);
+        // const fileName = getFileNameFromURL(location);
+        console.log(`🔧 Processing image ${id} `);
 
         // Download image
-        const response = await axios.get(location, { responseType: 'arraybuffer' });
-        const originalBuffer = Buffer.from(response.data);
+        // const response = await axios.get(location, { responseType: 'arraybuffer' });
+        const [originalBuffer] = await bucket.file(id).download();
         console.log(`✅ Downloaded Image ${id} from Firebase`);
 
         // Get metadata
-        const originalMeta = await sharp(originalBuffer).metadata();
+        // const originalMeta = await sharp(originalBuffer).metadata();
+        // const originalWidth = originalMeta.width;
+        // console.log(`📏 Image ${id} original width: ${originalWidth} px`);
+
+        const parser = exifParser.create(originalBuffer);
+        const result = parser.parse();
+        const originalMeta = result.tags
         const originalWidth = originalMeta.width;
+        const artist = originalMeta.Artist || originalMeta.artist || null;
+        const dateTaken = originalMeta.DateTimeOriginal
+            ? new Date(originalMeta.DateTimeOriginal * 1000) // exif-parser gives seconds since epoch
+            : null;
         console.log(`📏 Image ${id} original width: ${originalWidth} px`);
+        console.log(`📏 Image ${id} original Artist: ${artist}`);
+        console.log(`📏 Image ${id} date taken dateTaken: ${dateTaken}`);
 
         // Strip metadata
-        const strippedBuffer = await sharp(originalBuffer).withMetadata({}).toBuffer();
+        // const strippedBuffer = await sharp(originalBuffer).withMetadata({}).toBuffer();
+        // const strippedBuffer = await sharp(originalBuffer).toBuffer();
+        const baseImage = sharp(originalBuffer);
+        const strippedBuffer = await baseImage.toBuffer();
+        let compressedBuffer;
         console.log(`✅ Stripped metadata for Image ${id}`);
+        if (planType == 'pro') {
+            // Upload stripped image
+            const strippedPath = `compressed_${id}`;
+            await bucket.file(strippedPath).save(strippedBuffer, {
+                contentType: "image/jpeg",
+                metadata: {
+                    cacheControl: "public, max-age=31536000, immutable"
+                },
+            });
+            console.log(`✅ Stored stripped Image ${id} to Firebase`);
+        } else {
+            // Create 3000px version (or use original if already smaller)
 
-        // Upload stripped image
-        const strippedPath = `stripped / ${fileName} `;
-        await bucket.file(strippedPath).save(strippedBuffer, {
-            contentType: 'image/jpeg',
-        });
-        console.log(`✅ Stored stripped Image ${id} to Firebase`);
+            if (originalWidth <= 3000) {
+                // Use stripped buffer as compressed since it's already <= 3000px
+                compressedBuffer = strippedBuffer;
+                console.log(`✅ Image ${id} is ${originalWidth}px wide(≤ 3000px), using original size`);
+            } else {
+                // Resize to 3000px
+                compressedBuffer = await baseImage.resize({ width: 3000 }).jpeg().toBuffer();
+                console.log(`✅ Resized Image ${id} from ${originalWidth}px to 3000px`);
+            }
+            const compressedPath = `compressed_${id}`;
+            await bucket.file(compressedPath).save(compressedBuffer, {
+                contentType: 'image/jpeg',
+                metadata: {
+                    cacheControl: "public, max-age=31536000, immutable"
+                },
+            });
 
-        // Create 3000px version (or use original if already smaller)
-        // let compressedBuffer;
-        // if (originalWidth <= 3000) {
-        //     // Use stripped buffer as compressed since it's already <= 3000px
-        //     compressedBuffer = strippedBuffer;
-        //     console.log(`✅ Image ${id} is ${originalWidth}px wide(≤ 3000px), using original size`);
-        // } else {
-        //     // Resize to 3000px
-        //     compressedBuffer = await sharp(strippedBuffer)
-        //         .resize({ width: 3000 })
-        //         .jpeg()
-        //         .toBuffer();
-        //     console.log(`✅ Resized Image ${id} from ${originalWidth}px to 3000px`);
-        // }
-
-        // const compressedPath = `compressed3 / ${fileName} `;
-        // await bucket.file(compressedPath).save(compressedBuffer, {
-        //     contentType: 'image/jpeg',
-        // });
-        // console.log(`✅ Stored 3000px Image ${id} to Firebase`);
-
-        // // Create 400px thumbnail
-        // const thumbBuffer = await sharp(strippedBuffer)
-        //     .resize({ width: 400 })
-        //     .jpeg()
-        //     .toBuffer();
-        // console.log(`✅ Created 400px thumbnail for Image ${id}`);
+            console.log(`✅ Stored 3000px Image ${id} to Firebase`);
+        }
+        // Create 400px thumbnail
+        const thumbBuffer = await baseImage.resize({ width: 400 }).jpeg().toBuffer();
+        console.log(`✅ Created 100px thumbnail for Image ${id}`);
 
         return {
             id,
             success: true,
             data: {
-                json_meta_data: JSON.stringify(originalMeta),
-                thumb_byte: null,
+                json_meta_data: null,
+                thumb_byte: thumbBuffer,
                 image_byte: null,
-                status: 'warm'
+                status: 'warm',
+                compressed_location: null,
+                artist: artist,
+                dateCreated: dateTaken,
             }
         };
     } catch (error) {
@@ -100,17 +118,20 @@ async function processSingleImage(image) {
             id,
             success: false,
             data: {
-                json_meta_data: JSON.stringify(originalMeta),
+                json_meta_data: null,
                 thumb_byte: null,
                 image_byte: null,
-                status: 'warm_failed'
+                status: 'warm_failed',
+                compressed_location: null,
+                artist: null,
+                dateCreated: null,
             }
         };
     }
 }
 
 // Process images in parallel with concurrency limit
-async function processImagesBatch(images) {
+async function processImagesBatch(images, planType) {
     console.log(`🔃 Processing batch of ${images.length} images with ${PARALLEL_LIMIT} parallel workers`);
 
     const results = [];
@@ -121,7 +142,7 @@ async function processImagesBatch(images) {
         console.log(`🔃 Processing chunk ${Math.floor(i / PARALLEL_LIMIT) + 1} /${Math.ceil(images.length / PARALLEL_LIMIT)
             } (${chunk.length} images)`);
 
-        const chunkPromises = chunk.map(image => processSingleImage(image));
+        const chunkPromises = chunk.map(image => processSingleImage(image, planType));
         const chunkResults = await Promise.all(chunkPromises);
         results.push(...chunkResults);
 
@@ -139,28 +160,44 @@ async function performBatchUpdate(client, successfulResults) {
 
     for (const result of successfulResults) {
         const { id, data } = result;
-        // Fixed: Cast the id parameter properly and ensure correct parameter order
-        valuesClauses.push(`($${paramIndex}:: uuid, $${paramIndex + 1}, $${paramIndex + 2}:: jsonb, $${paramIndex + 3}:: bytea, $${paramIndex + 4}:: bytea)`);
-        allParams.push(id, data.status, data.json_meta_data, data.thumb_byte, data.image_byte);
-        paramIndex += 5;
+
+        valuesClauses.push(
+            `($${paramIndex}::uuid, $${paramIndex + 1}, $${paramIndex + 2}::jsonb, $${paramIndex + 3}::bytea, $${paramIndex + 4}::bytea, $${paramIndex + 5}, $${paramIndex + 6}, $${paramIndex + 7})`
+        );
+
+        allParams.push(
+            id,
+            data.status,
+            data.json_meta_data,
+            data.thumb_byte,
+            data.image_byte,
+            data.compressed_location,
+            data.artist,
+            data.dateCreated
+        );
+
+        paramIndex += 8; // ✅ increment by 8 params per row
     }
 
     const batchUpdateQuery = `
         UPDATE images 
         SET status = data.status,
-    json_meta_data = data.json_meta_data,
-    thumb_byte = data.thumb_byte,
-    image_byte = data.image_byte
-FROM(VALUES ${valuesClauses.join(', ')}) AS data(id, status, json_meta_data, thumb_byte, image_byte)
+            json_meta_data = data.json_meta_data,
+            thumb_byte = data.thumb_byte,
+            image_byte = data.image_byte,
+            compressed_location = data.compressed_location,
+            artist = data.artist,
+            date_taken = data.dateCreated
+        FROM (VALUES ${valuesClauses.join(', ')})
+            AS data(id, status, json_meta_data, thumb_byte, image_byte, compressed_location, artist, dateCreated)
         WHERE images.id = data.id
     `;
 
     console.log(`🔃 Executing batch query with ${allParams.length} parameters...`);
     const startTime = Date.now();
 
-    // Set a timeout for the query (increased to handle large binary data)
     const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('Batch update timeout after 60 seconds')), 180000);
+        setTimeout(() => reject(new Error('Batch update timeout after 180 seconds')), 180000);
     });
 
     const updateResult = await Promise.race([
@@ -169,11 +206,10 @@ FROM(VALUES ${valuesClauses.join(', ')}) AS data(id, status, json_meta_data, thu
     ]);
 
     const duration = Date.now() - startTime;
-    console.log(`✅ Successfully batch updated ${updateResult.rowCount} images in database(${duration}ms)`);
+    console.log(`✅ Successfully batch updated ${updateResult.rowCount} images in database (${duration}ms)`);
 
-    // Verify all records were updated
     if (updateResult.rowCount !== successfulResults.length) {
-        console.warn(`⚠️  Expected to update ${successfulResults.length} records, but updated ${updateResult.rowCount} `);
+        console.warn(`⚠️ Expected to update ${successfulResults.length} records, but updated ${updateResult.rowCount}`);
     }
 }
 
@@ -198,9 +234,12 @@ async function performChunkedUpdates(client, successfulResults) {
                          SET status = $1,
     json_meta_data = $2,
     thumb_byte = $3,
-    image_byte = $4
-                         WHERE id = $5`,
-                        [data.status, data.json_meta_data, data.thumb_byte, data.image_byte, id]
+    image_byte = $4,
+    compressed_location = $5,
+    artist = $6,
+    date_taken = $7
+                         WHERE id = $8`,
+                        [data.status, data.json_meta_data, data.thumb_byte, data.image_byte, data.compressed_location, data.artist, data.dateCreated, id]
                     );
                     totalUpdated++;
                 } catch (error) {
@@ -323,9 +362,12 @@ async function updateDatabaseBatch(client, results) {
                          SET status = $1,
     json_meta_data = $2,
     thumb_byte = $3,
-    image_byte = $4
-                         WHERE id = $5`,
-                        [data.status, data.json_meta_data, data.thumb_byte, data.image_byte, id]
+    image_byte = $4,
+    compressed_location = $5,
+    artist = $6,
+    date_taken = $7
+                         WHERE id = $8`,
+                        [data.status, data.json_meta_data, data.thumb_byte, data.image_byte, data.compressed_location, data.artist, data.dateCreated, id]
                     );
                     await client.query('COMMIT');
 
@@ -363,7 +405,7 @@ async function fetchAllHotImages(client, groupId) {
 }
 
 // Process images in batches of BATCH_SIZE with database update after each batch
-async function processImagesBatches(client, images, groupId) {
+async function processImagesBatches(client, images, groupId, planType) {
     console.log(`🔃 Processing ${images.length} images in batches of ${BATCH_SIZE} for group ${groupId}`);
 
     let totalProcessed = 0;
@@ -378,7 +420,7 @@ async function processImagesBatches(client, images, groupId) {
         console.log(`🔃 Processing batch ${batchNumber}/${totalBatches} (${batch.length} images) for group ${groupId}`);
 
         // Process this batch
-        const batchResults = await processImagesBatch(batch);
+        const batchResults = await processImagesBatch(batch, planType);
 
         // Update database immediately after processing this batch
         console.log(`🔃 Updating database for batch ${batchNumber}/${totalBatches}`);
@@ -403,7 +445,7 @@ async function processImagesBatches(client, images, groupId) {
 }
 
 // Process a single group with batching
-async function processGroup(client, groupId) {
+async function processGroup(client, groupId, planType) {
     console.log(`🔃 Starting processing for group ${groupId}`);
 
     // Fetch ALL hot images for this group at once
@@ -418,7 +460,7 @@ async function processGroup(client, groupId) {
     console.log(`✅ Fetched ${allImages.length} hot images for group ${groupId}`);
 
     // Process all images in batches with database updates after each batch
-    const { totalProcessed, totalFailed } = await processImagesBatches(client, allImages, groupId);
+    const { totalProcessed, totalFailed } = await processImagesBatches(client, allImages, groupId, planType);
 
     console.log(`✅ Completed processing for group ${groupId}. Total: ${totalProcessed}/${allImages.length} processed successfully, ${totalFailed} failed`);
 
@@ -435,6 +477,7 @@ async function processImages() {
   WHERE status = 'hot'
   ORDER BY uploaded_at ASC
   LIMIT 1`);
+
             console.log(`✅ Found ${groupRows.length} hot groups`);
 
             let totalProcessedAllGroups = 0;
@@ -443,7 +486,15 @@ async function processImages() {
                 break;
             }
             for (const group of groupRows) {
-                const processedCount = await processGroup(client, group.group_id);
+                const { rows: groupDetailsRow } = await client.query(`SELECT plan_type
+                            FROM groups
+                            WHERE id = ${group.group_id}`);
+                planType = groupDetailsRow[0]?.plan_type;
+                if (groupRows.length == 0) {
+                    console.log("Not able to fetch the plan type for group " + group.group_id)
+                    break;
+                }
+                const processedCount = await processGroup(client, group.group_id, planType);
                 totalProcessedAllGroups += processedCount;
             }
 

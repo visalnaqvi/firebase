@@ -40,7 +40,8 @@ TABLES = [
         last_processed_at timestamp NULL,
         created_at timestamp NULL,
         last_image_uploaded_at timestamp NULL,
-        last_processed_step text
+        last_processed_step text,
+        plan_type text
     );
     """,
     """
@@ -49,6 +50,7 @@ TABLES = [
         group_id int NOT NULL,
         filename text NOT NULL,
         "location" text NOT NULL,
+        compressed_location text,
         delete_at timestamp NULL,
         status text NULL,
         json_meta_data jsonb NULL,
@@ -59,7 +61,9 @@ TABLES = [
         last_downloaded_at timestamp NULL,
         created_by_user int NOT NULL,
         last_processed_at timestamp Null,
-        "size" int8 NULL
+        "size" int8 NULL,
+        artist text,
+        date_created text
     );
     """,
     """

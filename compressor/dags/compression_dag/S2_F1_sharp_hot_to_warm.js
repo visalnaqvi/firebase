@@ -60,7 +60,7 @@ async function processSingleImage(image, planType) {
         // const strippedBuffer = await sharp(originalBuffer).withMetadata({}).toBuffer();
         // const strippedBuffer = await sharp(originalBuffer).toBuffer();
         const baseImage = sharp(originalBuffer);
-        const strippedBuffer = await baseImage.toBuffer();
+        const strippedBuffer = await baseImage.rotate().toBuffer();
         let compressedBuffer;
         console.log(`✅ Stripped metadata for Image ${id}`);
         if (planType == 'pro') {
@@ -82,7 +82,7 @@ async function processSingleImage(image, planType) {
                 console.log(`✅ Image ${id} is ${originalWidth}px wide(≤ 3000px), using original size`);
             } else {
                 // Resize to 3000px
-                compressedBuffer = await baseImage.resize({ width: 3000 }).jpeg().toBuffer();
+                compressedBuffer = await baseImage.rotate().resize({ width: 3000 }).jpeg().toBuffer();
                 console.log(`✅ Resized Image ${id} from ${originalWidth}px to 3000px`);
             }
             const compressedPath = `compressed_${id}`;
@@ -176,7 +176,7 @@ async function performBatchUpdate(client, successfulResults) {
             data.dateCreated
         );
 
-        paramIndex += 8; // ✅ increment by 8 params per row
+        paramIndex += 8;
     }
 
     const batchUpdateQuery = `
@@ -187,7 +187,8 @@ async function performBatchUpdate(client, successfulResults) {
             image_byte = data.image_byte,
             compressed_location = data.compressed_location,
             artist = data.artist,
-            date_taken = data.dateCreated
+            date_taken = data.dateCreated,
+            last_processed_at = NOW()
         FROM (VALUES ${valuesClauses.join(', ')})
             AS data(id, status, json_meta_data, thumb_byte, image_byte, compressed_location, artist, dateCreated)
         WHERE images.id = data.id
@@ -213,6 +214,7 @@ async function performBatchUpdate(client, successfulResults) {
     }
 }
 
+
 // Fallback: chunked updates (smaller batches)
 async function performChunkedUpdates(client, successfulResults) {
     const CHUNK_SIZE = 5; // Even smaller chunks for fallback with binary data
@@ -237,7 +239,8 @@ async function performChunkedUpdates(client, successfulResults) {
     image_byte = $4,
     compressed_location = $5,
     artist = $6,
-    date_taken = $7
+    date_taken = $7,
+    last_processed_at = NOW()
                          WHERE id = $8`,
                         [data.status, data.json_meta_data, data.thumb_byte, data.image_byte, data.compressed_location, data.artist, data.dateCreated, id]
                     );
@@ -365,7 +368,8 @@ async function updateDatabaseBatch(client, results) {
     image_byte = $4,
     compressed_location = $5,
     artist = $6,
-    date_taken = $7
+    date_taken = $7,
+    last_processed_at = NOW()
                          WHERE id = $8`,
                         [data.status, data.json_meta_data, data.thumb_byte, data.image_byte, data.compressed_location, data.artist, data.dateCreated, id]
                     );

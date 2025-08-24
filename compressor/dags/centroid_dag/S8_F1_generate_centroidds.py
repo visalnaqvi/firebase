@@ -76,6 +76,7 @@ def process_group(group_id):
 
     # Get embedding size from first point
     first_face_id = best_faces[0]["id"]
+    print("finding vector " + first_face_id)
     face_point = qdrant.retrieve(collection_name=str(group_id), ids=[first_face_id], with_vectors=True)
     if not face_point or not face_point[0].vector:
         logging.warning(f"No embedding found for first face in group {group_id}")

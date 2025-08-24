@@ -28,7 +28,7 @@ def update_groups_to_warm():
         cur.execute("""
             SELECT 
                 COUNT(*) FILTER (WHERE status = 'warm' AND last_processed_at <= NOW() - INTERVAL '1 minutes') AS valid_images,
-                COUNT(*) AS total_images
+                COUNT(*) FILTER (WHERE status = 'warm') AS total_images
             FROM images
             WHERE group_id = %s
         """, (group_id,))

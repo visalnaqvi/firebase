@@ -85,6 +85,16 @@ TABLES = [
             similar_person_id VARCHAR(255)
         );
     """,
+    """
+    CREATE TABLE persons (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(), 
+    thumbnail BYTEA,                               
+    name TEXT,                                     
+    user_id INT,                                   
+    image_ids UUID[] DEFAULT '{}'   ,
+	group_id int 
+);
+""",
     # Trigger function to send notification
     """
     CREATE TABLE process_status (

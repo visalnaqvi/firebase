@@ -106,7 +106,7 @@ def insert_similar_faces(pairs):
     conn = get_db_connection()
     cur = conn.cursor()
     execute_values(cur, """
-        INSERT INTO similar_faces (person_id, similar_person_id)
+        INSERT INTO similar_faces (person_id, similar_person_id, group_id)
         VALUES %s
     """, pairs)
     conn.commit()
@@ -130,7 +130,7 @@ def main():
 
             similar_ids = find_similar(qdrant_client, collection_name, vector, person_id, threshold=0.5)
             for sim_id in similar_ids:
-                all_pairs.append((person_id, sim_id))
+                all_pairs.append((person_id, sim_id,group_id ))
 
         insert_similar_faces(all_pairs)
         mark_group_processed(group_id)

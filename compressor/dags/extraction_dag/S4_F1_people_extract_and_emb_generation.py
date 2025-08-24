@@ -19,11 +19,16 @@ import concurrent.futures
 import numpy as np
 import math
 import open_clip
+import firebase_admin
+from firebase_admin import credentials, storage
 def _normalize(value, min_val, max_val):
     if max_val <= min_val:
         return 0.0
     return float(min(max((value - min_val) / (max_val - min_val), 0.0), 1.0))
-
+cred = credentials.Certificate("firebase-key.json")
+firebase_admin.initialize_app(cred, {
+    "storageBucket": "gallery-585ee.firebasestorage.app"
+})
 def estimate_frontalness_from_landmarks(face, face_crop):
     """
     Try to estimate frontalness using landmarks if explicit yaw/pitch not available.
@@ -350,25 +355,39 @@ class HybridFaceIndexer:
         except Exception as e:
             logger.error(f"Failed to convert image to bytes: {e}")
             raise
-    def read_image_from_url(self , url: str):
-            # Download the image
-            response = requests.get(url, stream=True)
-            response.raise_for_status()  # will throw error if invalid
+    # def read_image_from_url(self , url: str):
+    #         # Download the image
+    #         response = requests.get(url, stream=True)
+    #         response.raise_for_status()  # will throw error if invalid
             
-            # Convert to numpy array
-            image_array = np.asarray(bytearray(response.content), dtype=np.uint8)
+    #         # Convert to numpy array
+    #         image_array = np.asarray(bytearray(response.content), dtype=np.uint8)
             
-            # Decode to OpenCV image (BGR format)
-            img = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
+    #         # Decode to OpenCV image (BGR format)
+    #         img = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
             
-            return img   
+    #         return img   
+    def read_image_from_firebase(self, path: str):
+        bucket = storage.bucket()
+        blob = bucket.blob("compressed_"+path)   # e.g. "images/group1/pic.jpg"
+
+        # Download image as bytes
+        img_bytes = blob.download_as_bytes()
+
+        # Convert to numpy array
+        image_array = np.frombuffer(img_bytes, dtype=np.uint8)
+
+        # Decode into OpenCV format
+        img = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
+
+        return img
     def process_image(self, image_id: int, location, yolo_model, collection_name: str) -> List[dict]:
         """Process single image with comprehensive error handling"""
         try:
             # Decode image
             # nparr = np.frombuffer(image_bytes, np.uint8)
             # img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-            img = self.read_image_from_url(location)
+            img = self.read_image_from_firebase(image_id)
             if img is None:
                 logger.warning(f"Failed to decode image {image_id}")
                 return []

@@ -2,11 +2,11 @@ import psycopg2
 
 def get_db_connection():
     return psycopg2.connect(
-         host="ballast.proxy.rlwy.net",
-        port="56193",
-        dbname="railway",
+         host="localhost",
+        port="5432",
+        dbname="postgres",
         user="postgres",
-        password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
+        password="admin"
     )
 
 TABLES = [
@@ -32,7 +32,7 @@ TABLES = [
     CREATE TABLE IF NOT EXISTS public."groups" (
         id SERIAL PRIMARY KEY,
         "name" text NOT NULL,
-        "profile_pic_location" text NOT NULL,
+        "profile_pic_location" text NULL,
         status text NOT NULL,
         total_images int4 NULL,
         total_size int8 NULL,
@@ -41,7 +41,9 @@ TABLES = [
         created_at timestamp NULL,
         last_image_uploaded_at timestamp NULL,
         last_processed_step text,
-        plan_type text
+        plan_type text,
+        access text,
+        profile_pic_bytes bytea
     );
     """,
     """
@@ -49,7 +51,7 @@ TABLES = [
         id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
         group_id int NOT NULL,
         filename text NOT NULL,
-        "location" text NOT NULL,
+        "location" text NULL,
         compressed_location text,
         delete_at timestamp NULL,
         status text NULL,
@@ -63,7 +65,10 @@ TABLES = [
         last_processed_at timestamp Null,
         "size" int8 NULL,
         artist text,
-        date_created text
+        date_created text,
+        signed_url TEXT,
+        expire_time TIMESTAMP,
+        date_taken TIMESTAMP,
     );
     """,
     """
@@ -83,6 +88,16 @@ TABLES = [
     );
     """,
     """
+    CREATE TABLE persons (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(), 
+    thumbnail BYTEA,                               
+    name TEXT,                                     
+    user_id INT,                                   
+    image_ids UUID[] DEFAULT '{}'   ,
+	group_id int 
+);
+""",
+    """
         CREATE TABLE IF NOT EXISTS similar_faces (
             id SERIAL PRIMARY KEY,
             group_id VARCHAR(255),
@@ -90,6 +105,7 @@ TABLES = [
             similar_person_id VARCHAR(255)
         );
     """,
+    
     # Trigger function to send notification
     """
     CREATE TABLE process_status (

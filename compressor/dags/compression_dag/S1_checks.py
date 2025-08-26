@@ -84,7 +84,8 @@ TABLES = [
         email text NULL,
         phone_number text NULL,
         password_hash text NULL,
-        created_at timestamp NULL
+        created_at timestamp NULL,
+        plan_type text
     );
     """,
     """

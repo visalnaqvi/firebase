@@ -2,11 +2,11 @@ import psycopg2
 
 def get_db_connection():
     return psycopg2.connect(
-         host="localhost",
-        port="5432",
-        dbname="postgres",
+         host="ballast.proxy.rlwy.net",
+        port="56193",
+        dbname="railway",
         user="postgres",
-        password="admin"
+        password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
     )
 
 TABLES = [
@@ -68,7 +68,7 @@ TABLES = [
         date_created text,
         signed_url TEXT,
         expire_time TIMESTAMP,
-        date_taken TIMESTAMP,
+        date_taken TIMESTAMP
     );
     """,
     """
@@ -95,7 +95,8 @@ TABLES = [
     name TEXT,                                     
     user_id INT,                                   
     image_ids UUID[] DEFAULT '{}'   ,
-	group_id int 
+	group_id int,
+ face_id uuid 
 );
 """,
     """

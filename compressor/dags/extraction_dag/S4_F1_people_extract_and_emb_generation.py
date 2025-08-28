@@ -137,8 +137,8 @@ def compute_face_quality(face_crop: np.ndarray, face) -> float:
     return float(min(max(score, 0.0), 1.0))
 @dataclass
 class Config:
-    BATCH_SIZE: int = 10  # Increased for better efficiency
-    PARALLEL_LIMIT: int = 2  # Reduced to prevent resource exhaustion
+    BATCH_SIZE: int = 5  # Increased for better efficiency
+    PARALLEL_LIMIT: int = 1  # Reduced to prevent resource exhaustion
     PERSON_CONFIDENCE_THRESHOLD: float = 0.5
     MAX_RETRIES: int = 3
     
@@ -162,11 +162,11 @@ def get_db_connection():
     conn = None
     try:
         conn = psycopg2.connect(
-        host="localhost",
-        port="5432",
-        dbname="postgres",
+         host="ballast.proxy.rlwy.net",
+        port="56193",
+        dbname="railway",
         user="postgres",
-        password="admin"
+        password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
     )
         yield conn
     except Exception as e:
@@ -447,11 +447,11 @@ class HybridFaceIndexer:
                                 face_thumb_bytes = None
 
                             # compute quality score (use helper). fallback to 0.0
-                            try:
-                                quality_score = compute_face_quality(face_crop, face)
-                            except Exception as e:
-                                logger.warning(f"Quality scoring failed for image {image_id}, face: {e}")
-                                quality_score = 0.0
+                            # try:
+                            #     quality_score = compute_face_quality(face_crop, face)
+                            # except Exception as e:
+                            #     logger.warning(f"Quality scoring failed for image {image_id}, face: {e}")
+                            #     quality_score = 0.0
                             
                             # Insert into Qdrant
                             self.qdrant.upsert(
@@ -467,7 +467,6 @@ class HybridFaceIndexer:
                                             "person_id": None,
                                             "image_id": image_id,
                                             "cloth_ids":None,
-                                            "quality_score": quality_score
                                         }
                                     )
                                 ]
@@ -478,7 +477,7 @@ class HybridFaceIndexer:
                                 "image_id": image_id,
                                 "person_id": None,
                                 "face_thumb_bytes": face_thumb_bytes,
-                                "quality_score": quality_score
+                                "quality_score": -1
                             })
                             
                         except Exception as e:

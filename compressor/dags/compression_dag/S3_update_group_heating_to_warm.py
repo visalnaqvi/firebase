@@ -4,11 +4,11 @@ from datetime import datetime, timedelta
 
 def update_groups_to_warm():
     conn = psycopg2.connect(
-        dbname="postgres",
-        user="postgres",
-        password="admin",
-        host="localhost",
-        port="5432"
+       host="ballast.proxy.rlwy.net",
+            port="56193",
+            dbname="railway",
+            user="postgres",
+            password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
     )
     conn.autocommit = True
     cur = conn.cursor(cursor_factory=DictCursor)

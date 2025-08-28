@@ -12,12 +12,13 @@ logger = logging.getLogger(__name__)
 # DB connection
 def get_db_connection():
     return psycopg2.connect(
-        host="localhost",
-        port="5432",
-        dbname="postgres",
+         host="ballast.proxy.rlwy.net",
+        port="56193",
+        dbname="railway",
         user="postgres",
-        password="admin"
+        password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
     )
+
 
 # Get distinct person_id, group_id pairs
 def get_unique_persons(group_id):

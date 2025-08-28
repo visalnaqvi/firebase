@@ -5,3 +5,6 @@ key.json
 /compressor/yolov8x.pt
 /compressor/node_modules
 /compressor/firebase-key.json
+/compressor/dags/compression_dag/firebase-key.json
+/compressor/dags/extraction_dag/firebase-key.json
+/compressor/img_orig

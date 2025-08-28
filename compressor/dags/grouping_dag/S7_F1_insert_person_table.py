@@ -2,11 +2,11 @@ import psycopg2
 
 def get_db_connection():
     return psycopg2.connect(
-        host="localhost",
-        port="5432",
-        dbname="postgres",
+         host="ballast.proxy.rlwy.net",
+        port="56193",
+        dbname="railway",
         user="postgres",
-        password="admin"
+        password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
     )
 
 def sync_persons():
@@ -26,12 +26,13 @@ def sync_persons():
             # 2️⃣ Insert or update image_ids only
             cur.execute(
     """
-    INSERT INTO persons (id, thumbnail, name, user_id, image_ids, group_id)
+    INSERT INTO persons (id, thumbnail, name, user_id, image_ids, group_id, quality_score , face_id)
     WITH best_faces AS (
         SELECT DISTINCT ON (person_id)
             person_id,
             face_thumb_bytes,
-            quality_score
+            quality_score,
+            id
         FROM faces
         WHERE group_id = %s
           AND person_id IS NOT NULL
@@ -51,12 +52,15 @@ def sync_persons():
         NULL,   -- name placeholder
         NULL,   -- user_id placeholder
         a.image_ids,
-        %s as group_id
+        %s as group_id,
+        b.quality_score,
+        b.id as face_id
     FROM best_faces b
     JOIN all_images a ON b.person_id = a.person_id
     ON CONFLICT (id) DO UPDATE
     SET image_ids = EXCLUDED.image_ids,
-        group_id = EXCLUDED.group_id
+        group_id = EXCLUDED.group_id,
+        quality_score = EXCLUDED.quality_score
     """,
     (group_id, group_id, group_id)
 )

@@ -92,7 +92,8 @@ TABLES = [
     name TEXT,                                     
     user_id INT,                                   
     image_ids UUID[] DEFAULT '{}'   ,
-	group_id int 
+	group_id int,
+ quality_score float8 
 );
 """,
     # Trigger function to send notification

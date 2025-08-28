@@ -13,11 +13,11 @@ admin.initializeApp({
 const bucket = admin.storage().bucket();
 
 const pool = new Pool({
-    connectionString: "postgresql://postgres:admin@localhost:5432/postgres"
+    connectionString: "postgresql://postgres:AfldldzckDWtkskkAMEhMaDXnMqknaPY@ballast.proxy.rlwy.net:56193/railway"
 });
 
 // Configuration
-const BATCH_SIZE = 50
+const BATCH_SIZE = 10
 const PARALLEL_LIMIT = 10;
 const DB_TIMEOUT = 60000;
 
@@ -187,7 +187,7 @@ async function performBatchUpdate(client, successfulResults) {
             image_byte = data.image_byte,
             compressed_location = data.compressed_location,
             artist = data.artist,
-            date_taken = data.dateCreated,
+            date_taken = data.dateCreated::timestamp,
             last_processed_at = NOW()
         FROM (VALUES ${valuesClauses.join(', ')})
             AS data(id, status, json_meta_data, thumb_byte, image_byte, compressed_location, artist, dateCreated)

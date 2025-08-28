@@ -17,12 +17,14 @@ qdrant = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
 
 def get_db_connection():
     return psycopg2.connect(
-        host="localhost",
-        port="5432",
-        dbname="postgres",
+         host="ballast.proxy.rlwy.net",
+        port="56193",
+        dbname="railway",
         user="postgres",
-        password="admin"
+        password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
     )
+
+
 
 
 def get_warmed_groups():
@@ -40,11 +42,10 @@ def get_best_faces_for_group(group_id):
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=DictCursor)
     cur.execute("""
-        SELECT DISTINCT ON (person_id)
-            id, person_id, quality_score, face_thumb_bytes
-        FROM faces
+        SELECT face_id as id , id as person_id, quality_score, thumbnail as face_thumb_bytes
+        FROM persons
         WHERE group_id = %s
-        ORDER BY person_id, quality_score DESC NULLS LAST, id
+        and thumbnail is not null
     """, (group_id,))
     res = cur.fetchall()
     cur.close()

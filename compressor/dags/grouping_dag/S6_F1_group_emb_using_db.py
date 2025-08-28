@@ -11,11 +11,11 @@ from qdrant_client.http.models import Filter, FieldCondition, MatchValue
 
 def get_db_connection():
     return psycopg2.connect(
-        host="localhost",
-        port="5432",
-        dbname="postgres",
+         host="ballast.proxy.rlwy.net",
+        port="56193",
+        dbname="railway",
         user="postgres",
-        password="admin"
+        password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
     )
 
 class SimplifiedFaceGrouping:

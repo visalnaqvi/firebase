@@ -7,13 +7,7 @@ import logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 # Postgres connection config
-PG_CONFIG = {
-    "host": "localhost",
-    "port": "5432",
-    "dbname": "postgres",
-    "user": "postgres",
-    "password": "admin"
-}
+
 
 # Qdrant config
 QDRANT_HOST = "localhost"
@@ -22,7 +16,13 @@ QDRANT_PORT = 6333
 
 def get_group_ids():
     """Fetch group_ids from process_status where status = 'extraction'."""
-    with psycopg2.connect(**PG_CONFIG) as conn, conn.cursor() as cur:
+    with psycopg2.connect(
+         host="ballast.proxy.rlwy.net",
+        port="56193",
+        dbname="railway",
+        user="postgres",
+        password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
+    ) as conn, conn.cursor() as cur:
         cur.execute("SELECT group_id FROM process_status WHERE status = 'extraction'")
         rows = cur.fetchall()
     return [r[0] for r in rows if r[0] is not None]
@@ -30,7 +30,13 @@ def get_group_ids():
 
 def get_face_ids_for_group(group_id):
     """Fetch all face_ids from faces table for a specific group_id."""
-    with psycopg2.connect(**PG_CONFIG) as conn, conn.cursor() as cur:
+    with psycopg2.connect(
+         host="ballast.proxy.rlwy.net",
+        port="56193",
+        dbname="railway",
+        user="postgres",
+        password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
+    ) as conn, conn.cursor() as cur:
         cur.execute("SELECT id FROM faces WHERE group_id = %s", (group_id,))
         rows = cur.fetchall()
     return {str(r[0]) for r in rows}  # Convert to string for Qdrant match

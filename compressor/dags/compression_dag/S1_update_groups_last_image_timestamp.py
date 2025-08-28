@@ -5,18 +5,15 @@ import logging
 # --- Configure logging ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-# --- DB Connection Settings ---
-DB_CONFIG = {
-    "dbname": "postgres",
-    "user": "postgres",
-    "password": "admin",
-    "host": "localhost",
-    "port": 5432,
-}
-
-def update_groups_last_image_timestamp():
+def update_groups_metadata():
     try:
-        conn = psycopg2.connect(**DB_CONFIG)
+        conn = psycopg2.connect(
+            host="ballast.proxy.rlwy.net",
+            port="56193",
+            dbname="railway",
+            user="postgres",
+            password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
+        )
         cur = conn.cursor(cursor_factory=DictCursor)
 
         # 1. Get all groups with heating status
@@ -30,27 +27,36 @@ def update_groups_last_image_timestamp():
         for group in groups:
             group_id = group["id"]
 
-            # 2. Get most recent image for this group
+            # 2. Get most recent image timestamp, total images, and total size
             cur.execute("""
-                SELECT uploaded_at
+                SELECT 
+                    MAX(uploaded_at) AS latest_uploaded_at,
+                    COUNT(*) AS total_images,
+                    COALESCE(SUM(size), 0) AS total_size
                 FROM images
                 WHERE group_id = %s
-                ORDER BY uploaded_at DESC
-                LIMIT 1
             """, (group_id,))
             row = cur.fetchone()
 
-            if row and row["uploaded_at"]:
-                latest_uploaded_at = row["uploaded_at"]
+            latest_uploaded_at = row["latest_uploaded_at"]
+            total_images = row["total_images"]
+            total_size = row["total_size"]
 
-                # 3. Update groups.last_image_uploaded_at
+            if total_images > 0:
+                # 3. Update groups table with aggregated values
                 cur.execute("""
                     UPDATE groups
-                    SET last_image_uploaded_at = %s
+                    SET last_image_uploaded_at = %s,
+                        total_images = %s,
+                        total_size = %s
                     WHERE id = %s
-                """, (latest_uploaded_at, group_id))
+                """, (latest_uploaded_at, total_images, total_size, group_id))
 
-                logging.info(f"Updated group {group_id} with last_image_uploaded_at = {latest_uploaded_at}")
+                logging.info(
+                    f"Updated group {group_id} → "
+                    f"last_image_uploaded_at={latest_uploaded_at}, "
+                    f"total_images={total_images}, total_size={total_size}"
+                )
             else:
                 logging.info(f"No images found for group {group_id}")
 
@@ -64,4 +70,4 @@ def update_groups_last_image_timestamp():
 
 
 if __name__ == "__main__":
-    update_groups_last_image_timestamp()
+    update_groups_metadata()

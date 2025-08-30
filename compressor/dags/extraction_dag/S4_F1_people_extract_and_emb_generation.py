@@ -375,13 +375,40 @@ class HybridFaceIndexer:
             logger.error(f"Failed to extract clothing embedding: {e}")
             raise
 
-    def image_to_bytes(self, cv_image: np.ndarray) -> bytes:
-        """Convert OpenCV image to bytes with error handling"""
+    # def image_to_bytes(self, cv_image: np.ndarray) -> bytes:
+    #     """Convert OpenCV image to bytes with error handling"""
+    #     try:
+    #         success, buffer = cv2.imencode('.jpg', cv_image, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    #         if not success:
+    #             raise ValueError("Could not encode image")
+    #         return buffer.tobytes()
+    #     except Exception as e:
+    #         logger.error(f"Failed to convert image to bytes: {e}")
+    #         raise
+    
+    def image_to_bytes(self, cv_image: np.ndarray, target_height: int = 150) -> bytes:
+        """Convert OpenCV image to bytes with consistent sizing and error handling"""
         try:
-            success, buffer = cv2.imencode('.jpg', cv_image, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            if cv_image is None or cv_image.size == 0:
+                raise ValueError("Empty or invalid image")
+            
+            # Get original dimensions
+            original_height, original_width = cv_image.shape[:2]
+            
+            # Calculate new width maintaining aspect ratio
+            aspect_ratio = original_width / original_height
+            new_width = int(target_height * aspect_ratio)
+            
+            # Resize the image
+            resized_image = cv2.resize(cv_image, (new_width, target_height), interpolation=cv2.INTER_AREA)
+            
+            # Encode to JPEG bytes
+            success, buffer = cv2.imencode('.jpg', resized_image, [cv2.IMWRITE_JPEG_QUALITY, 85])
             if not success:
                 raise ValueError("Could not encode image")
+            
             return buffer.tobytes()
+            
         except Exception as e:
             logger.error(f"Failed to convert image to bytes: {e}")
             raise

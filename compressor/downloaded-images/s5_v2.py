@@ -9,12 +9,70 @@ from typing import List, Tuple, Optional
 from psycopg2.extras import execute_values
 import time
 
+# InsightFace imports
+try:
+    import insightface
+    from insightface.app import FaceAnalysis
+    INSIGHTFACE_AVAILABLE = True
+    print("InsightFace is available")
+except ImportError:
+    INSIGHTFACE_AVAILABLE = False
+    print("InsightFace not available. Please install with: pip install insightface")
+
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# Global face analysis app - initialize once
+face_app = None
+
+def initialize_face_analysis():
+    """Initialize InsightFace face analysis app"""
+    global face_app
+    if not INSIGHTFACE_AVAILABLE:
+        logger.error("InsightFace not available. Cannot perform face detection.")
+        return False
+    
+    try:
+        face_app = FaceAnalysis(providers=['CPUExecutionProvider'])  # Use CPU for stability
+        face_app.prepare(ctx_id=0, det_size=(640, 640))
+        logger.info("InsightFace initialized successfully")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to initialize InsightFace: {e}")
+        return False
+
+def detect_faces_count(image: np.ndarray) -> int:
+    """
+    Detect faces in image using InsightFace and return count
+    Returns -1 if detection fails
+    """
+    global face_app
+    
+    if face_app is None:
+        logger.error("Face analysis app not initialized")
+        return -1
+    
+    try:
+        # InsightFace expects RGB format
+        if len(image.shape) == 3:
+            image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        else:
+            image_rgb = image
+        
+        # Detect faces
+        faces = face_app.get(image_rgb)
+        face_count = len(faces)
+        
+        logger.debug(f"Detected {face_count} faces in image")
+        return face_count
+        
+    except Exception as e:
+        logger.error(f"Error in face detection: {e}")
+        return -1
 
 @contextmanager
 def get_db_connection():
@@ -339,8 +397,14 @@ def compute_face_visibility_score(face_crop: np.ndarray) -> float:
 
 def compute_face_quality_from_bytes(face_thumb_bytes: bytes) -> float:
     """
-    FIXED: Face quality computation that handles thumbnails properly
+    ENHANCED: Face quality computation with InsightFace detection
     Returns 0-1 where 1 is highest quality
+    
+    NEW LOGIC:
+    - If 0 faces detected: return 0.0
+    - If >1 faces detected: return 0.0  
+    - If exactly 1 face detected: proceed with quality analysis
+    - If face detection fails: fallback to original quality analysis (with penalty)
     """
     if not face_thumb_bytes:
         return 0.0
@@ -354,7 +418,25 @@ def compute_face_quality_from_bytes(face_thumb_bytes: bytes) -> float:
     h, w = face_crop.shape[:2]
     logger.debug(f"Processing face crop: {w}x{h}")
 
-    # Component scores
+    # NEW: Face detection check using InsightFace
+    face_count = detect_faces_count(face_crop)
+    
+    if face_count == 0:
+        logger.debug("No faces detected - returning 0.0")
+        return 0.0
+    elif face_count > 1:
+        logger.debug(f"Multiple faces detected ({face_count}) - returning 0.0")
+        return 0.0
+    elif face_count == -1:
+        # Face detection failed - proceed with original analysis but with penalty
+        logger.warning("Face detection failed - proceeding with penalty")
+        detection_penalty = 0.3  # 30% penalty for failed detection
+    else:
+        # Exactly 1 face detected - no penalty
+        logger.debug("Exactly 1 face detected - proceeding with full analysis")
+        detection_penalty = 0.0
+
+    # Component scores (original logic)
     sharpness_score = compute_sharpness_score(face_crop)
     brightness_score = compute_brightness_contrast_score(face_crop)
     visibility_score = compute_face_visibility_score(face_crop)
@@ -366,7 +448,7 @@ def compute_face_quality_from_bytes(face_thumb_bytes: bytes) -> float:
                 f"Brightness: {brightness_score:.3f}, Visibility: {visibility_score:.3f}, "
                 f"Completeness: {completeness_score:.3f}, Size: {size_score:.3f}")
     
-    # FIXED: More balanced weighting and much gentler penalties
+    # Base quality calculation (same as before)
     base_quality_score = (
         0.25 * sharpness_score +      # Image quality
         0.25 * visibility_score +     # Frontal pose, visible features
@@ -375,7 +457,7 @@ def compute_face_quality_from_bytes(face_thumb_bytes: bytes) -> float:
         0.10 * size_score             # Adequate size
     )
     
-    # MUCH MORE GENTLE penalties
+    # Original penalties (same as before)
     penalties = 0.0
     
     # Only severe penalties for extremely poor conditions
@@ -393,20 +475,23 @@ def compute_face_quality_from_bytes(face_thumb_bytes: bytes) -> float:
     if brightness_score < 0.1:  # Only extremely dark
         penalties += 0.15  # Reduced from 0.25
     
-    # Apply much gentler penalties
-    final_score = max(0.05, base_quality_score - penalties)  # Minimum 5% instead of 0%
+    # Apply penalties including detection penalty
+    total_penalties = penalties + detection_penalty
+    final_score = max(0.05, base_quality_score - total_penalties)  # Minimum 5%
     
-    # Bonus for good complete faces
-    if completeness_score > 0.7 and visibility_score > 0.6:
-        final_score = min(1.0, final_score + 0.1)
+    # Bonus for good complete faces (only if face detection succeeded)
+    if detection_penalty == 0.0:  # Only if exactly 1 face was detected
+        if completeness_score > 0.7 and visibility_score > 0.6:
+            final_score = min(1.0, final_score + 0.1)
+        
+        # Special bonus for smaller but very complete faces
+        if size_score > 0.3 and completeness_score > 0.8:
+            final_score = min(1.0, final_score + 0.05)
     
-    # Special bonus for smaller but very complete faces over large incomplete ones
-    if size_score > 0.3 and completeness_score > 0.8:  # Not tiny, but complete
-        final_score = min(1.0, final_score + 0.05)
+    logger.debug(f"Final score: {final_score:.3f} (base: {base_quality_score:.3f}, "
+                f"penalties: {penalties:.3f}, detection_penalty: {detection_penalty:.3f})")
     
-    logger.debug(f"Final score: {final_score:.3f} (base: {base_quality_score:.3f}, penalties: {penalties:.3f})")
-    
-    return float(min(max(final_score, 0.05), 1.0))  # Ensure 5-100% range
+    return float(min(max(final_score, 0.0), 1.0))  # Ensure 0-100% range
 
 def bytes_to_cv_image(image_bytes: bytes) -> Optional[np.ndarray]:
     """Convert bytes to OpenCV image"""
@@ -437,7 +522,7 @@ def process_single_face(face_data: Tuple[str, bytes]) -> Tuple[str, float]:
         return face_id, quality_score
     except Exception as e:
         logger.error(f"Error processing face {face_id}: {e}")
-        return face_id, 0.05  # Give failed faces minimum score instead of 0
+        return face_id, 0.0  # Return 0 for failed faces
 
 class FaceQualityProcessor:
     """Handles face quality processing operations"""
@@ -515,15 +600,20 @@ class FaceQualityProcessor:
                     results.append(result)
                 except concurrent.futures.TimeoutError:
                     logger.error(f"Timeout processing face {face_id}")
-                    results.append((face_id, 0.05))
+                    results.append((face_id, 0.0))
                 except Exception as e:
                     logger.error(f"Error processing face {face_id}: {e}")
-                    results.append((face_id, 0.05))
+                    results.append((face_id, 0.0))
         
         return results
 
 def main():
     """Main processing function"""
+    # Initialize InsightFace
+    if not initialize_face_analysis():
+        logger.error("Failed to initialize face analysis. Exiting.")
+        return
+    
     processor = FaceQualityProcessor()
     
     # Get initial count
@@ -536,6 +626,7 @@ def main():
     
     processed_count = 0
     batch_count = 0
+    zero_score_count = 0  # Track faces with 0 score (0 or >1 faces detected)
     
     while True:
         batch_count += 1
@@ -558,16 +649,20 @@ def main():
         # Calculate statistics
         quality_scores = [score for _, score in face_scores]
         avg_quality = sum(quality_scores) / len(quality_scores) if quality_scores else 0
+        zero_count = sum(1 for score in quality_scores if score == 0.0)
         high_quality_count = sum(1 for score in quality_scores if score > 0.7)
         medium_quality_count = sum(1 for score in quality_scores if 0.4 <= score <= 0.7)
-        low_quality_count = sum(1 for score in quality_scores if score < 0.4)
+        low_quality_count = sum(1 for score in quality_scores if 0.0 < score < 0.4)
+        
+        zero_score_count += zero_count
         
         logger.info(f"Batch {batch_count} completed in {batch_time:.2f}s:")
         logger.info(f"  Processed: {len(faces_batch)} faces")
         logger.info(f"  Average quality: {avg_quality:.3f}")
+        logger.info(f"  Zero quality (0/multiple faces): {zero_count}")
         logger.info(f"  High quality (>0.7): {high_quality_count}")
         logger.info(f"  Medium quality (0.4-0.7): {medium_quality_count}")
-        logger.info(f"  Low quality (<0.4): {low_quality_count}")
+        logger.info(f"  Low quality (0-0.4): {low_quality_count}")
         logger.info(f"  Total processed so far: {processed_count}/{total_unprocessed}")
         
         # Update database
@@ -578,6 +673,7 @@ def main():
             break
     
     logger.info(f"Processing completed! Total faces processed: {processed_count}")
+    logger.info(f"Total faces with 0 score (0 or multiple faces detected): {zero_score_count}")
 
 if __name__ == "__main__":
     try:

@@ -44,7 +44,8 @@ TABLES = [
         last_processed_step text,
         plan_type text,
         access text,
-        profile_pic_bytes bytea
+        profile_pic_bytes bytea,
+        delete_at timestamp
     );
     """,
     """
@@ -69,7 +70,8 @@ TABLES = [
         date_created text,
         signed_url TEXT,
         expire_time TIMESTAMP,
-        date_taken TIMESTAMP
+        date_taken TIMESTAMP,
+        highlight boolean
     );
     """,
     """
@@ -95,8 +97,9 @@ TABLES = [
     thumbnail BYTEA,                               
     name TEXT,                                     
     user_id INT,                                   
-    image_ids UUID[] DEFAULT '{}'   ,
+    image_ids UUID[] ,
 	group_id int,
+    total_images int,
  face_id uuid 
 );
 """,

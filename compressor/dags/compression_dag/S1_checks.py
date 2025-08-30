@@ -25,7 +25,8 @@ TABLES = [
         cropped_img_byte bytea NULL,
         face_thumb_bytes bytea NULL,
         created_at timestamp NULL,
-        quality_score float8 NULL
+        quality_score float8 NULL,
+        insight_face_confidence float8
     );
     """,
     """

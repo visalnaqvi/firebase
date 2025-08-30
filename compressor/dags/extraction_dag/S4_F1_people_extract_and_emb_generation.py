@@ -172,7 +172,7 @@ def expand_face_bbox_for_clothing(face_bbox, person_bbox, expansion_factor=2.0):
 
 @dataclass
 class Config:
-    BATCH_SIZE: int = 5
+    BATCH_SIZE: int = 20
     PARALLEL_LIMIT: int = 1
     PERSON_CONFIDENCE_THRESHOLD: float = 0.5
     MAX_RETRIES: int = 3
@@ -280,11 +280,11 @@ class DatabaseManager:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 query = """
-                INSERT INTO faces (id, image_id, group_id, person_id, face_thumb_bytes, quality_score)
+                INSERT INTO faces (id, image_id, group_id, person_id, face_thumb_bytes, quality_score , insight_face_confidence)
                 VALUES %s
                 """
                 values = [
-                    (r['id'], r['image_id'], group_id, r['person_id'], r['face_thumb_bytes'], r['quality_score'])
+                    (r['id'], r['image_id'], group_id, r['person_id'], r['face_thumb_bytes'], r['quality_score'] , r['insight_face_confidence'])
                     for r in records
                 ]
                 execute_values(cur, query, values)
@@ -482,7 +482,7 @@ class HybridFaceIndexer:
                     # Step 4: Extract clothing embedding using expanded face region
                     clothing_bbox = expand_face_bbox_for_clothing(
                         [face_x1 - best_person_box[0], face_y1 - best_person_box[1], 
-                         face_x2 - best_person_box[0], face_y2 - best_person_box[1]], 
+                        face_x2 - best_person_box[0], face_y2 - best_person_box[1]], 
                         best_person_box
                     )
                     
@@ -514,6 +514,9 @@ class HybridFaceIndexer:
                     # Extract face embedding
                     face_emb = face.normed_embedding
                     point_id = str(uuid.uuid4())
+                    
+                    # Extract InsightFace confidence
+                    insight_face_confidence = float(face.det_score) if hasattr(face, 'det_score') and face.det_score is not None else 0.0
                     
                     # Extract face thumbnail with padding
                     face_thumb_bytes = None
@@ -567,7 +570,8 @@ class HybridFaceIndexer:
                         "image_id": image_id,
                         "person_id": None,
                         "face_thumb_bytes": face_thumb_bytes,
-                        "quality_score": -1
+                        "quality_score": -1,
+                        "insight_face_confidence":insight_face_confidence
                     })
                     
                 except Exception as e:
@@ -635,7 +639,7 @@ def process_group(group_id: int, indexer: HybridFaceIndexer, yolo_model) -> None
             
             if len(unprocessed) < config.BATCH_SIZE:
                 break
-                
+            
         logger.info(f"Completed processing group {group_id}: {processed_count} total images processed")
         
     except Exception as e:
@@ -673,7 +677,7 @@ def main():
                     continue
             
             logger.info("Processing completed successfully")
-        
+
         except Exception as e:
             logger.error(f"Critical error in main execution: {e}")
             raise

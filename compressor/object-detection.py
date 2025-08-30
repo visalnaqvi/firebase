@@ -5,7 +5,7 @@ import cv2
 model = YOLO("yolov8n.pt")  # you can also use yolov8s.pt, yolov8m.pt, etc.
 
 # Load image from laptop
-image_path = "673715637220bc664ed24ba2.jpg"
+image_path = "_A740800.jpg"
 img = cv2.imread(image_path)
 
 if img is None:

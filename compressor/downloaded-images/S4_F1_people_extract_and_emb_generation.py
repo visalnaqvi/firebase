@@ -21,42 +21,46 @@ import math
 import open_clip
 import firebase_admin
 from firebase_admin import credentials, storage
-
 def _normalize(value, min_val, max_val):
     if max_val <= min_val:
         return 0.0
     return float(min(max((value - min_val) / (max_val - min_val), 0.0), 1.0))
-
 cred = credentials.Certificate("firebase-key.json")
 firebase_admin.initialize_app(cred, {
     "storageBucket": "gallery-585ee.firebasestorage.app"
 })
-
 def estimate_frontalness_from_landmarks(face, face_crop):
     """
     Try to estimate frontalness using landmarks if explicit yaw/pitch not available.
     Returns a score 0..1 where 1 is frontal.
     """
+    # many insightface outputs include 'kps' or 'landmark' as an array of 5 or 106 points
     kps = None
     if hasattr(face, "kps") and face.kps is not None:
-        kps = np.array(face.kps)
+        kps = np.array(face.kps)  # usually shape (5,2)
     elif hasattr(face, "landmark") and face.landmark is not None:
-        kps = np.array(face.landmark)
+        kps = np.array(face.landmark)  # maybe (106,2)
     if kps is None or kps.size == 0:
-        return 1.0
+        return 1.0  # give neutral credit if no landmarks
 
+    # Use eye-center symmetry as a cheap proxy:
     try:
+        # pick left/right eye points depending on format
         if kps.shape[0] >= 5:
             left_eye = kps[0]
             right_eye = kps[1]
         else:
+            # fallback: use extremes in x
             xs = kps[:, 0]
             left_eye = kps[np.argmin(xs)]
             right_eye = kps[np.argmax(xs)]
 
+        # horizontal displacement between eyes relative to width
         dx = abs(right_eye[0] - left_eye[0])
         width = face_crop.shape[1] if face_crop is not None else dx
         ratio = dx / (width + 1e-6)
+        # if ratio is too small, face might be turned (one eye far behind)
+        # normalize expected ratio ~ 0.25..0.45 typical -> map to 0..1
         return _normalize(ratio, 0.18, 0.45)
     except Exception:
         return 1.0
@@ -64,17 +68,22 @@ def estimate_frontalness_from_landmarks(face, face_crop):
 def compute_face_quality(face_crop: np.ndarray, face) -> float:
     """
     Compute a 0..1 quality score for the crop and the face object returned by insightface.
+    face_crop: the actual image crop (BGR numpy array).
+    face: the insightface face object (has bbox, det_score, maybe kps, maybe pose).
     """
     if face_crop is None or face_crop.size == 0:
         return 0.0
 
+    # 1) Sharpness (Laplacian variance)
     try:
         gray = cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY)
         sharpness = cv2.Laplacian(gray, cv2.CV_64F).var()
-        sharp_norm = _normalize(sharpness, 50, 1500)
+        # Typical values vary; tune min/max on sample data
+        sharp_norm = _normalize(sharpness, 50, 1500)  # tune these bounds
     except Exception:
         sharp_norm = 0.0
 
+    # 2) Detection confidence (if available)
     det_conf = 0.0
     if hasattr(face, "det_score") and face.det_score is not None:
         try:
@@ -83,100 +92,56 @@ def compute_face_quality(face_crop: np.ndarray, face) -> float:
         except Exception:
             det_conf = 0.0
 
+    # 3) Frontalness / pose
     pose_score = 1.0
+    # some models provide yaw/pitch/roll, or face.pose
     if hasattr(face, "yaw") or hasattr(face, "pose"):
         try:
             yaw = getattr(face, "yaw", 0.0)
             pitch = getattr(face, "pitch", 0.0)
+            # assume degrees; clamp large values
             yaw = float(yaw) if yaw is not None else 0.0
             pitch = float(pitch) if pitch is not None else 0.0
-            yaw_score = max(0.0, 1.0 - abs(yaw) / 40.0)
+            yaw_score = max(0.0, 1.0 - abs(yaw) / 40.0)  # 40° tolerance
             pitch_score = max(0.0, 1.0 - abs(pitch) / 40.0)
             pose_score = (yaw_score + pitch_score) / 2.0
         except Exception:
             pose_score = 1.0
     else:
+        # fallback to landmarks-based estimate
         try:
             pose_score = estimate_frontalness_from_landmarks(face, face_crop)
         except Exception:
             pose_score = 1.0
 
+    # 4) Completeness / bbox margin: ensure bbox isn't tightly cut at edges
     completeness = 1.0
     try:
         if hasattr(face, "bbox") and face.bbox is not None:
             x1, y1, x2, y2 = map(int, face.bbox)
             h, w = face_crop.shape[:2]
+            # If bbox hits crop border, penalize
             margin_x = min(x1, w - x2)
             margin_y = min(y1, h - y2)
             min_margin = min(margin_x, margin_y)
+            # normalize margin (0 -> bad, >= 10px -> good). Tune if needed.
             completeness = _normalize(min_margin, 0, 10)
         else:
             completeness = 1.0
     except Exception:
         completeness = 1.0
 
+    # Weighted sum (tune weights)
+    # Give sharpness and pose the most weight
     score = 0.45 * sharp_norm + 0.25 * pose_score + 0.15 * det_conf + 0.15 * completeness
     return float(min(max(score, 0.0), 1.0))
-
-def calculate_overlap_ratio(box1, box2):
-    """Calculate the overlap ratio between two bounding boxes"""
-    x1_1, y1_1, x2_1, y2_1 = box1
-    x1_2, y1_2, x2_2, y2_2 = box2
-    
-    # Calculate intersection
-    x1_i = max(x1_1, x1_2)
-    y1_i = max(y1_1, y1_2)
-    x2_i = min(x2_1, x2_2)
-    y2_i = min(y2_1, y2_2)
-    
-    if x2_i <= x1_i or y2_i <= y1_i:
-        return 0.0
-    
-    intersection_area = (x2_i - x1_i) * (y2_i - y1_i)
-    
-    # Calculate area of smaller box
-    area1 = (x2_1 - x1_1) * (y2_1 - y1_1)
-    area2 = (x2_2 - x1_2) * (y2_2 - y1_2)
-    smaller_area = min(area1, area2)
-    
-    if smaller_area == 0:
-        return 0.0
-    
-    return intersection_area / smaller_area
-
-def expand_face_bbox_for_clothing(face_bbox, person_bbox, expansion_factor=2.0):
-    """
-    Expand face bounding box to include more body area for clothing detection
-    """
-    # Convert face bbox from person-relative to image coordinates
-    face_x1, face_y1, face_x2, face_y2 = face_bbox
-    person_x1, person_y1, person_x2, person_y2 = person_bbox
-    
-    # Convert to absolute coordinates
-    abs_face_x1 = person_x1 + face_x1
-    abs_face_y1 = person_y1 + face_y1
-    abs_face_x2 = person_x1 + face_x2
-    abs_face_y2 = person_y1 + face_y2
-    
-    # Calculate face dimensions
-    face_width = abs_face_x2 - abs_face_x1
-    face_height = abs_face_y2 - abs_face_y1
-    
-    # Expand downward and slightly outward to capture clothing
-    expanded_x1 = max(person_x1, abs_face_x1 - face_width * 0.5)
-    expanded_y1 = abs_face_y1  # Start from face top
-    expanded_x2 = min(person_x2, abs_face_x2 + face_width * 0.5)
-    expanded_y2 = min(person_y2, abs_face_y1 + face_height * expansion_factor)
-    
-    return [int(expanded_x1), int(expanded_y1), int(expanded_x2), int(expanded_y2)]
-
 @dataclass
 class Config:
-    BATCH_SIZE: int = 5
-    PARALLEL_LIMIT: int = 1
+    BATCH_SIZE: int = 5  # Increased for better efficiency
+    PARALLEL_LIMIT: int = 1  # Reduced to prevent resource exhaustion
     PERSON_CONFIDENCE_THRESHOLD: float = 0.5
     MAX_RETRIES: int = 3
-    FACE_OVERLAP_THRESHOLD: float = 0.7  # Threshold for considering faces as duplicates
+    
     
     # Qdrant config
     QDRANT_HOST: str = os.getenv("QDRANT_HOST", "localhost")
@@ -197,12 +162,12 @@ def get_db_connection():
     conn = None
     try:
         conn = psycopg2.connect(
-            host="ballast.proxy.rlwy.net",
-            port="56193",
-            dbname="railway",
-            user="postgres",
-            password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
-        )
+         host="ballast.proxy.rlwy.net",
+        port="56193",
+        dbname="railway",
+        user="postgres",
+        password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
+    )
         yield conn
     except Exception as e:
         if conn:
@@ -234,7 +199,6 @@ class DatabaseManager:
             with conn.cursor() as cur:
                 cur.execute("SELECT id FROM groups WHERE status = 'warm' order by last_processed_at limit 1")
                 return [row[0] for row in cur.fetchall()]
-
     @staticmethod
     def mark_group_processed(group_id) -> None:
         """Mark group_id as processed and clear image_byte"""
@@ -244,16 +208,15 @@ class DatabaseManager:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 query = """
-                    UPDATE groups
-                    SET status = 'warming',
-                        last_processed_at = NOW(),
-                        last_processed_step = 'extraction'
-                    WHERE id = %s AND status = 'warm'
-                """
+                            UPDATE groups
+                            SET status = 'warming',
+                    last_processed_at = NOW(),
+                            last_processed_step = 'extraction'
+                            WHERE id = %s AND status = 'warm'
+                        """
                 cur.execute(query, (group_id,))
                 conn.commit()
                 logger.info(f"Marked {group_id} group_id as processed")            
-
     @staticmethod
     def mark_group_process_status(group_id) -> None:
         """Mark group_id as processed and clear image_byte"""
@@ -263,10 +226,10 @@ class DatabaseManager:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 query = """
-                    UPDATE process_status
-                    SET group_id = %s
-                    WHERE status = 'extraction'
-                """
+                            UPDATE process_status
+                            SET group_id = %s
+                            WHERE status = 'extraction'
+                        """
                 cur.execute(query, (group_id,))
                 conn.commit()
                 logger.info(f"Marked {group_id} group_id as processed")
@@ -280,11 +243,11 @@ class DatabaseManager:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 query = """
-                INSERT INTO faces (id, image_id, group_id, person_id, face_thumb_bytes, quality_score)
+                INSERT INTO faces (id, image_id, group_id, person_id, face_thumb_bytes , quality_score)
                 VALUES %s
                 """
                 values = [
-                    (r['id'], r['image_id'], group_id, r['person_id'], r['face_thumb_bytes'], r['quality_score'])
+                    (r['id'], r['image_id'], group_id, r['person_id'], r['face_thumb_bytes'] , r['quality_score'])
                     for r in records
                 ]
                 execute_values(cur, query, values)
@@ -314,9 +277,10 @@ class HybridFaceIndexer:
             self.face_app = FaceAnalysis(name='buffalo_l', providers=['CPUExecutionProvider'])
             self.face_app.prepare(ctx_id=0)
             
+            # Fix 1: Load model with proper device handling for meta tensors
             try:
                 model_name = "ViT-B-32"
-                pretrained = "laion2b_s34b_b79k"
+                pretrained = "laion2b_s34b_b79k"  # or another CLIP pretrained set
 
                 self.model, _, self.preprocess = open_clip.create_model_and_transforms(
                     model_name,
@@ -324,8 +288,11 @@ class HybridFaceIndexer:
                     device=self.device
                 )
                 self.tokenizer = open_clip.get_tokenizer(model_name)
+                # Move to device after loading
+                # self.fashion_model = self.fashion_model.to(self.device)
             except Exception as meta_error:
                 logger.warning(f"Meta tensor error, trying alternative loading: {meta_error}")
+                # Alternative: Load on CPU first, then move
                 self.fashion_model = AutoModel.from_pretrained(
                     'Marqo/marqo-fashionCLIP', 
                     trust_remote_code=True,
@@ -350,6 +317,8 @@ class HybridFaceIndexer:
         """Setup Qdrant collection with proper error handling"""
         try:
             if not self.qdrant.collection_exists(collection_name):
+                # self.qdrant.delete_collection(collection_name)
+
                 self.qdrant.create_collection(
                     collection_name=collection_name,
                     vectors_config={
@@ -365,11 +334,12 @@ class HybridFaceIndexer:
     def extract_clothing_embedding(self, image_input) -> torch.Tensor:
         """Extract clothing embeddings with proper error handling"""
         try:
+            
             img_tensor = self.preprocess(image_input).unsqueeze(0).to(self.device)
 
             with torch.no_grad():
                 emb = self.model.encode_image(img_tensor)
-                emb = emb / emb.norm(dim=-1, keepdim=True)
+                emb = emb / emb.norm(dim=-1, keepdim=True)  # normalize
                 return emb[0]
         except Exception as e:
             logger.error(f"Failed to extract clothing embedding: {e}")
@@ -385,194 +355,134 @@ class HybridFaceIndexer:
         except Exception as e:
             logger.error(f"Failed to convert image to bytes: {e}")
             raise
-
+    # def read_image_from_url(self , url: str):
+    #         # Download the image
+    #         response = requests.get(url, stream=True)
+    #         response.raise_for_status()  # will throw error if invalid
+            
+    #         # Convert to numpy array
+    #         image_array = np.asarray(bytearray(response.content), dtype=np.uint8)
+            
+    #         # Decode to OpenCV image (BGR format)
+    #         img = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
+            
+    #         return img   
     def read_image_from_firebase(self, path: str):
         bucket = storage.bucket()
-        blob = bucket.blob("compressed_"+path)
+        blob = bucket.blob("compressed_"+path)   # e.g. "images/group1/pic.jpg"
 
+        # Download image as bytes
         img_bytes = blob.download_as_bytes()
+
+        # Convert to numpy array
         image_array = np.frombuffer(img_bytes, dtype=np.uint8)
+
+        # Decode into OpenCV format
         img = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
 
         return img
-
-    def deduplicate_faces(self, faces_with_bboxes):
-        """Remove duplicate faces based on overlap ratio"""
-        if len(faces_with_bboxes) <= 1:
-            return faces_with_bboxes
-        
-        # Sort by detection score (highest first)
-        faces_sorted = sorted(faces_with_bboxes, 
-                             key=lambda x: getattr(x[0], 'det_score', 0.0), 
-                             reverse=True)
-        
-        unique_faces = []
-        
-        for face, bbox in faces_sorted:
-            is_duplicate = False
-            
-            for unique_face, unique_bbox in unique_faces:
-                overlap = calculate_overlap_ratio(bbox, unique_bbox)
-                if overlap > config.FACE_OVERLAP_THRESHOLD:
-                    is_duplicate = True
-                    break
-            
-            if not is_duplicate:
-                unique_faces.append((face, bbox))
-        
-        logger.info(f"Deduplicated faces: {len(faces_with_bboxes)} -> {len(unique_faces)}")
-        return unique_faces
-
     def process_image(self, image_id: int, location, yolo_model, collection_name: str) -> List[dict]:
-        """Process single image with improved face-clothing association"""
+        """Process single image with comprehensive error handling"""
         try:
-            # Load original image
+            # Decode image
+            # nparr = np.frombuffer(image_bytes, np.uint8)
+            # img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
             img = self.read_image_from_firebase(image_id)
             if img is None:
                 logger.warning(f"Failed to decode image {image_id}")
                 return []
 
-            # Step 1: Detect all faces in the original image
-            all_faces = self.face_app.get(img)
-            if not all_faces:
-                logger.info(f"No faces detected in image {image_id}")
-                return []
-
-            # Step 2: YOLO person detection
+            # YOLO detection
             results = yolo_model(img)[0]
-            person_boxes = []
-            
+            records = []
+
             for box in results.boxes:
                 cls = int(box.cls[0])
                 conf = float(box.conf[0])
                 
                 if cls == 0 and conf > config.PERSON_CONFIDENCE_THRESHOLD:
                     x1, y1, x2, y2 = map(int, box.xyxy[0])
-                    person_boxes.append([x1, y1, x2, y2])
-
-            if not person_boxes:
-                logger.info(f"No persons detected in image {image_id}")
-                return []
-
-            # Step 3: Associate faces with persons and create face-clothing pairs
-            records = []
-            faces_with_bboxes = [(face, face.bbox) for face in all_faces]
-            
-            # Deduplicate faces
-            unique_faces = self.deduplicate_faces(faces_with_bboxes)
-            
-            for face, face_bbox in unique_faces:
-                try:
-                    face_x1, face_y1, face_x2, face_y2 = map(int, face_bbox)
-                    face_center_x = (face_x1 + face_x2) // 2
-                    face_center_y = (face_y1 + face_y2) // 2
+                    person_crop = img[y1:y2, x1:x2]
                     
-                    # Find the person box that contains this face
-                    best_person_box = None
-                    for person_box in person_boxes:
-                        px1, py1, px2, py2 = person_box
-                        if px1 <= face_center_x <= px2 and py1 <= face_center_y <= py2:
-                            best_person_box = person_box
-                            break
-                    
-                    if best_person_box is None:
-                        logger.warning(f"No person box found for face in image {image_id}")
+                    if person_crop.size == 0:
                         continue
                     
-                    # Step 4: Extract clothing embedding using expanded face region
-                    clothing_bbox = expand_face_bbox_for_clothing(
-                        [face_x1 - best_person_box[0], face_y1 - best_person_box[1], 
-                         face_x2 - best_person_box[0], face_y2 - best_person_box[1]], 
-                        best_person_box
-                    )
-                    
-                    # Ensure clothing bbox is within image bounds
-                    h, w = img.shape[:2]
-                    clothing_bbox[0] = max(0, clothing_bbox[0])
-                    clothing_bbox[1] = max(0, clothing_bbox[1])
-                    clothing_bbox[2] = min(w, clothing_bbox[2])
-                    clothing_bbox[3] = min(h, clothing_bbox[3])
-                    
-                    if clothing_bbox[2] <= clothing_bbox[0] or clothing_bbox[3] <= clothing_bbox[1]:
-                        logger.warning(f"Invalid clothing bbox for face in image {image_id}")
-                        continue
-                    
-                    clothing_crop = img[clothing_bbox[1]:clothing_bbox[3], clothing_bbox[0]:clothing_bbox[2]]
-                    
-                    if clothing_crop.size == 0:
-                        logger.warning(f"Empty clothing crop for face in image {image_id}")
+                    # Extract faces
+                    faces = self.face_app.get(person_crop)
+                    if not faces:
                         continue
                     
                     # Extract clothing embedding
                     try:
-                        pil_img = Image.fromarray(cv2.cvtColor(clothing_crop, cv2.COLOR_BGR2RGB))
+                        pil_img = Image.fromarray(cv2.cvtColor(person_crop, cv2.COLOR_BGR2RGB))
                         clothing_emb = self.extract_clothing_embedding(pil_img)
                     except Exception as e:
                         logger.warning(f"Failed to extract clothing embedding for image {image_id}: {e}")
                         continue
                     
-                    # Extract face embedding
-                    face_emb = face.normed_embedding
-                    point_id = str(uuid.uuid4())
-                    
-                    # Extract face thumbnail with padding
-                    face_thumb_bytes = None
-                    face_crop = None
-                    try:
-                        pad_x = int((face_x2 - face_x1) * 0.4)
-                        pad_y = int((face_y2 - face_y1) * 0.4)
-                        
-                        padded_x1 = max(0, face_x1 - pad_x)
-                        padded_y1 = max(0, face_y1 - pad_y)
-                        padded_x2 = min(w, face_x2 + pad_x)
-                        padded_y2 = min(h, face_y2 + pad_y)
-                        
-                        if padded_x2 > padded_x1 and padded_y2 > padded_y1:
-                            face_crop = img[padded_y1:padded_y2, padded_x1:padded_x2]
-                            if face_crop.size > 0:
-                                face_thumb_bytes = self.image_to_bytes(face_crop)
-                    except Exception:
-                        face_crop = None
-                        face_thumb_bytes = None
+                    # Process each face
+                    for face in faces:
+                        try:
+                            face_emb = face.normed_embedding
+                            point_id = str(uuid.uuid4())
+                            
+                            # Extract face thumbnail
+                            face_thumb_bytes = None
+                            face_crop = None
+                            try:
+                                x1_f, y1_f, x2_f, y2_f = map(int, face.bbox)
+                                pad_x = int((x2_f - x1_f) * 0.4)
+                                pad_y = int((y2_f - y1_f) * 0.4)
+                                # clip bbox to person_crop bounds to avoid errors
+                                x1_f = max(0, x1_f - pad_x) ; 
+                                y1_f = max(0, y1_f - pad_y)
+                                x2_f = min(person_crop.shape[1], x2_f + pad_x); 
+                                y2_f = min(person_crop.shape[0], y2_f + pad_y)
+                                if x2_f > x1_f and y2_f > y1_f:
+                                    face_crop = person_crop[y1_f:y2_f, x1_f:x2_f]
+                                    if face_crop.size > 0:
+                                        face_thumb_bytes = self.image_to_bytes(face_crop)
+                            except Exception:
+                                face_crop = None
+                                face_thumb_bytes = None
 
-                    # Compute quality score
-                    # try:
-                    #     quality_score = compute_face_quality(face_crop, face)
-                    #     quality_score = -1
-                    # except Exception as e:
-                    #     logger.warning(f"Quality scoring failed for image {image_id}, face: {e}")
-                    #     quality_score = 0.0
-                    
-                    # Insert into Qdrant
-                    self.qdrant.upsert(
-                        collection_name=collection_name,
-                        points=[
-                            PointStruct(
-                                id=point_id,
-                                vector={
-                                    "face": face_emb.tolist(),
-                                    "cloth": clothing_emb.cpu().tolist()
-                                },
-                                payload={
-                                    "person_id": None,
-                                    "image_id": image_id,
-                                    "cloth_ids": None,
-                                }
+                            # compute quality score (use helper). fallback to 0.0
+                            # try:
+                            #     quality_score = compute_face_quality(face_crop, face)
+                            # except Exception as e:
+                            #     logger.warning(f"Quality scoring failed for image {image_id}, face: {e}")
+                            #     quality_score = 0.0
+                            
+                            # Insert into Qdrant
+                            self.qdrant.upsert(
+                                collection_name=collection_name,
+                                points=[
+                                    PointStruct(
+                                        id=point_id,
+                                        vector={
+                                            "face": face_emb.tolist(),
+                                            "cloth": clothing_emb.cpu().tolist()
+                                        },
+                                        payload={
+                                            "person_id": None,
+                                            "image_id": image_id,
+                                            "cloth_ids":None,
+                                        }
+                                    )
+                                ]
                             )
-                        ]
-                    )
-                    
-                    records.append({
-                        "id": point_id,
-                        "image_id": image_id,
-                        "person_id": None,
-                        "face_thumb_bytes": face_thumb_bytes,
-                        "quality_score": -1
-                    })
-                    
-                except Exception as e:
-                    logger.error(f"Failed to process face in image {image_id}: {e}")
-                    continue
+                            
+                            records.append({
+                                "id": point_id,
+                                "image_id": image_id,
+                                "person_id": None,
+                                "face_thumb_bytes": face_thumb_bytes,
+                                "quality_score": -1
+                            })
+                            
+                        except Exception as e:
+                            logger.error(f"Failed to process face in image {image_id}: {e}")
+                            continue
 
             logger.info(f"Processed image {image_id}: {len(records)} faces detected")
             return records
@@ -596,7 +506,7 @@ class HybridFaceIndexer:
             for future in concurrent.futures.as_completed(futures):
                 img_id = futures[future]
                 try:
-                    result = future.result(timeout=60)
+                    result = future.result(timeout=60)  # 60 second timeout
                     all_results.extend(result)
                 except concurrent.futures.TimeoutError:
                     logger.error(f"Timeout processing image {img_id}")
@@ -614,6 +524,7 @@ def process_group(group_id: int, indexer: HybridFaceIndexer, yolo_model) -> None
         processed_count = 0
         
         while True:
+            # Fetch batch of unprocessed images
             unprocessed = DatabaseManager.fetch_unprocessed_images(group_id, config.BATCH_SIZE)
             
             if not unprocessed:
@@ -622,9 +533,13 @@ def process_group(group_id: int, indexer: HybridFaceIndexer, yolo_model) -> None
             
             logger.info(f"Found {len(unprocessed)} unprocessed images for group {group_id}")
             
+            # Process the batch
             records = indexer.process_images_batch(unprocessed, yolo_model, group_id)
+            
+            # Extract processed image IDs (all images in batch are considered processed)
             processed_image_ids = [img_id for img_id, _ in unprocessed]
             
+            # Insert faces and mark images as processed in transaction
             if records:
                 DatabaseManager.insert_faces_batch(records, group_id)
             
@@ -633,6 +548,7 @@ def process_group(group_id: int, indexer: HybridFaceIndexer, yolo_model) -> None
             processed_count += len(unprocessed)
             logger.info(f"Group {group_id}: Processed {processed_count} images so far, {len(records)} faces indexed")
             
+            # If we got fewer images than batch size, we're done
             if len(unprocessed) < config.BATCH_SIZE:
                 break
                 
@@ -644,17 +560,20 @@ def process_group(group_id: int, indexer: HybridFaceIndexer, yolo_model) -> None
 
 def main():
     """Main execution function with proper error handling"""
+           # Initialize models
     logger.info("Initializing YOLO model...")
     yolo_model = YOLO("yolov8x.pt")
     
     logger.info("Initializing face indexer...")
     indexer = HybridFaceIndexer()
-    
     while True:
         try:
+     
+            
+            
+            # Fetch groups to process
             groups = DatabaseManager.fetch_warm_groups()
             logger.info(f"Found {len(groups)} warm groups to process")
-            
             if not groups or len(groups) == 0:
                 break
             
@@ -662,6 +581,7 @@ def main():
                 logger.info("No warm groups found, exiting")
                 return
             
+            # Process each group
             for group_id in groups:
                 try:
                     DatabaseManager.mark_group_process_status(group_id)
@@ -677,6 +597,8 @@ def main():
         except Exception as e:
             logger.error(f"Critical error in main execution: {e}")
             raise
+        
+    
 
 if __name__ == "__main__":
     main()

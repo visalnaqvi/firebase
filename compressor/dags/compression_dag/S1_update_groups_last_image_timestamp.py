@@ -1,7 +1,7 @@
 import psycopg2
 from psycopg2.extras import DictCursor
 import logging
-
+import time
 # --- Configure logging ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
@@ -71,3 +71,5 @@ def update_groups_metadata():
 
 if __name__ == "__main__":
     update_groups_metadata()
+    print("Sleeping for 5 minutes...")
+    time.sleep(300)  # 300 seconds = 5 minutes

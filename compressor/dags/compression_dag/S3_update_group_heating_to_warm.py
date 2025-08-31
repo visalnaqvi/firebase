@@ -1,7 +1,7 @@
 import psycopg2
 from psycopg2.extras import DictCursor
 from datetime import datetime, timedelta
-
+import time
 def update_groups_to_warm():
     conn = psycopg2.connect(
        host="ballast.proxy.rlwy.net",
@@ -54,3 +54,5 @@ def update_groups_to_warm():
 
 if __name__ == "__main__":
     update_groups_to_warm()
+    print("Sleeping for 5 minutes...")
+    time.sleep(300)  # 300 seconds = 5 minutes

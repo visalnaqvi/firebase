@@ -370,6 +370,8 @@ def main():
 if __name__ == "__main__":
     try:
         main()
+        print("Sleeping for 10 minutes...")
+        time.sleep(600)  # 600 seconds = 10 minutes
     except KeyboardInterrupt:
         logger.info("Processing interrupted by user")
     except Exception as e:

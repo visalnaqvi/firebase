@@ -40,14 +40,14 @@ async function processSingleImage(image, planType) {
         console.log(`✅ Downloaded Image ${id} from Firebase`);
 
         // Get metadata
-        // const originalMeta = await sharp(originalBuffer).metadata();
-        // const originalWidth = originalMeta.width;
-        // console.log(`📏 Image ${id} original width: ${originalWidth} px`);
+        const sharpMeta = await sharp(originalBuffer).metadata();
+        const originalWidth = sharpMeta.width;
+        console.log(`📏 Image ${id} original width: ${originalWidth} px`);
 
         const parser = exifParser.create(originalBuffer);
         const result = parser.parse();
         const originalMeta = result.tags
-        const originalWidth = originalMeta.width;
+        // const originalWidth = originalMeta.width;
         const artist = originalMeta.Artist || originalMeta.artist || null;
         const dateTaken = originalMeta.DateTimeOriginal
             ? new Date(originalMeta.DateTimeOriginal * 1000) // exif-parser gives seconds since epoch
@@ -96,20 +96,41 @@ async function processSingleImage(image, planType) {
             console.log(`✅ Stored 3000px Image ${id} to Firebase`);
         }
         // Create 400px thumbnail
-        const thumbBuffer = await baseImage.resize({ width: 400 }).jpeg().toBuffer();
+        const thumbBuffer = baseImage.rotate().resize({ width: 200 }).jpeg().toBuffer();
+        const thumbPath = `thumbnail_${id}`;
+        const thumbFile = bucket.file(thumbPath);
+
+        await thumbFile.save(thumbBuffer, {
+            contentType: "image/jpeg",
+            metadata: {
+                cacheControl: "public, max-age=31536000, immutable"
+            },
+        });
+
+        console.log(`✅ Uploaded thumbnail for Image ${id} as ${thumbPath}`);
+
+        // Get signed URL for the thumbnail
+        const [downloadURL] = await thumbFile.getSignedUrl({
+            action: 'read',
+            expires: '03-09-2491' // Far future date for permanent access
+        });
+
+        console.log(`🌐 Thumbnail URL for ${id}`);
         console.log(`✅ Created 100px thumbnail for Image ${id}`);
+
 
         return {
             id,
             success: true,
             data: {
                 json_meta_data: null,
-                thumb_byte: thumbBuffer,
+                thumb_byte: null,
                 image_byte: null,
                 status: 'warm',
                 compressed_location: null,
                 artist: artist,
                 dateCreated: dateTaken,
+                location: downloadURL
             }
         };
     } catch (error) {
@@ -162,7 +183,7 @@ async function performBatchUpdate(client, successfulResults) {
         const { id, data } = result;
 
         valuesClauses.push(
-            `($${paramIndex}::uuid, $${paramIndex + 1}, $${paramIndex + 2}::jsonb, $${paramIndex + 3}::bytea, $${paramIndex + 4}::bytea, $${paramIndex + 5}, $${paramIndex + 6}, $${paramIndex + 7})`
+            `($${paramIndex}::uuid, $${paramIndex + 1}, $${paramIndex + 2}::jsonb, $${paramIndex + 3}::bytea, $${paramIndex + 4}::bytea, $${paramIndex + 5}, $${paramIndex + 6}, $${paramIndex + 7} , $${paramIndex + 8})`
         );
 
         allParams.push(
@@ -173,7 +194,8 @@ async function performBatchUpdate(client, successfulResults) {
             data.image_byte,
             data.compressed_location,
             data.artist,
-            data.dateCreated
+            data.dateCreated,
+            data.location
         );
 
         paramIndex += 8;
@@ -188,9 +210,10 @@ async function performBatchUpdate(client, successfulResults) {
             compressed_location = data.compressed_location,
             artist = data.artist,
             date_taken = data.dateCreated::timestamp,
-            last_processed_at = NOW()
+            last_processed_at = NOW(),
+            location = data.location
         FROM (VALUES ${valuesClauses.join(', ')})
-            AS data(id, status, json_meta_data, thumb_byte, image_byte, compressed_location, artist, dateCreated)
+            AS data(id, status, json_meta_data, thumb_byte, image_byte, compressed_location, artist, dateCreated , location)
         WHERE images.id = data.id
     `;
 
@@ -473,45 +496,47 @@ async function processGroup(client, groupId, planType) {
 
 async function processImages() {
     const client = await pool.connect();
-    while (true) {
-        try {
+    try {
+        while (true) {
             console.log("🔃 Getting hot groups to process images");
-            const { rows: groupRows } = await client.query(`SELECT group_id
-  FROM images
-  WHERE status = 'hot'
-  ORDER BY uploaded_at ASC
-  LIMIT 1`);
+            const { rows: groupRows } = await client.query(`
+                SELECT group_id
+                FROM images
+                WHERE status = 'hot'
+                ORDER BY uploaded_at ASC
+                LIMIT 1
+            `);
 
-            console.log(`✅ Found ${groupRows.length} hot groups`);
+            if (groupRows.length === 0) {
+                console.log("⏸️ No groups to process, waiting...");
+                await new Promise(res => setTimeout(res, 600000)); // wait 10MIN
+                continue;
+            }
 
             let totalProcessedAllGroups = 0;
-            if (groupRows.length == 0) {
-                console.log("No groups to process")
-                break;
-            }
             for (const group of groupRows) {
-                const { rows: groupDetailsRow } = await client.query(`SELECT plan_type
-                            FROM groups
-                            WHERE id = ${group.group_id}`);
-                planType = groupDetailsRow[0]?.plan_type;
-                if (groupRows.length == 0) {
-                    console.log("Not able to fetch the plan type for group " + group.group_id)
-                    break;
+                const { rows: groupDetailsRow } = await client.query(
+                    `SELECT plan_type FROM groups WHERE id = $1`,
+                    [group.group_id]
+                );
+
+                const planType = groupDetailsRow[0]?.plan_type;
+                if (!planType) {
+                    console.log("⚠️ Not able to fetch plan type for group " + group.group_id);
+                    continue;
                 }
+
                 const processedCount = await processGroup(client, group.group_id, planType);
                 totalProcessedAllGroups += processedCount;
             }
 
-            console.log(`🎉 Processing complete! Total images processed: ${totalProcessedAllGroups}`);
-
-        } catch (err) {
-            console.error('❌ Error processing images:', err);
-        } finally {
-            client.release();
-            await pool.end();
-            process.exit();
+            console.log(`🎉 Finished processing batch of groups. Total processed: ${totalProcessedAllGroups}`);
         }
+    } catch (err) {
+        console.error('❌ Error processing images:', err);
+    } finally {
+        client.release();
+        await pool.end();
     }
-
 }
 processImages();

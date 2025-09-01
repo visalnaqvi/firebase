@@ -1,13 +1,24 @@
 import psycopg2
 
+# def get_db_connection():
+#     return psycopg2.connect(
+#          host="ballast.proxy.rlwy.net",
+#         port="56193",
+#         dbname="railway",
+#         user="postgres",
+#         password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
+#     )
+
+
 def get_db_connection():
     return psycopg2.connect(
-         host="ballast.proxy.rlwy.net",
-        port="56193",
-        dbname="railway",
+         host="localhost",
+        port="5432",
+        dbname="postgres",
         user="postgres",
-        password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
+        password="admin"
     )
+
 
 TABLES = [
     """
@@ -69,7 +80,7 @@ TABLES = [
         artist text,
         date_created text,
         signed_url TEXT,
-        expire_time TIMESTAMP,
+        expire_time TIMESTAMPTZ,
         date_taken TIMESTAMP,
         highlight boolean
     );

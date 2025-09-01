@@ -14,6 +14,7 @@ const bucket = admin.storage().bucket();
 
 const pool = new Pool({
     connectionString: "postgresql://postgres:AfldldzckDWtkskkAMEhMaDXnMqknaPY@ballast.proxy.rlwy.net:56193/railway"
+    // connectionString: "postgresql://postgres:admin@localhost:5432/postgres"
 });
 
 // Configuration
@@ -198,7 +199,7 @@ async function performBatchUpdate(client, successfulResults) {
             data.location
         );
 
-        paramIndex += 8;
+        paramIndex += 9;
     }
 
     const batchUpdateQuery = `
@@ -263,9 +264,10 @@ async function performChunkedUpdates(client, successfulResults) {
     compressed_location = $5,
     artist = $6,
     date_taken = $7,
-    last_processed_at = NOW()
-                         WHERE id = $8`,
-                        [data.status, data.json_meta_data, data.thumb_byte, data.image_byte, data.compressed_location, data.artist, data.dateCreated, id]
+    last_processed_at = NOW(),
+    location = $8
+                         WHERE id = $9`,
+                        [data.status, data.json_meta_data, data.thumb_byte, data.image_byte, data.compressed_location, data.artist, data.dateCreated, data.location, id]
                     );
                     totalUpdated++;
                 } catch (error) {
@@ -392,9 +394,10 @@ async function updateDatabaseBatch(client, results) {
     compressed_location = $5,
     artist = $6,
     date_taken = $7,
-    last_processed_at = NOW()
-                         WHERE id = $8`,
-                        [data.status, data.json_meta_data, data.thumb_byte, data.image_byte, data.compressed_location, data.artist, data.dateCreated, id]
+    last_processed_at = NOW(),
+    location = $8
+                         WHERE id = $9`,
+                        [data.status, data.json_meta_data, data.thumb_byte, data.image_byte, data.compressed_location, data.artist, data.dateCreated, data.location, id]
                     );
                     await client.query('COMMIT');
 

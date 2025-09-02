@@ -99,7 +99,9 @@ TABLES = [
         phone_number text NULL,
         password_hash text NULL,
         created_at timestamp NULL,
-        plan_type text
+        plan_type text,
+        studio_name text , 
+        studio_logo bytea
     );
     """,
     """

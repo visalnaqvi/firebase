@@ -8,3 +8,6 @@ key.json
 /compressor/dags/compression_dag/firebase-key.json
 /compressor/dags/extraction_dag/firebase-key.json
 /compressor/img_orig
+compressor/compressed_img
+compressor/face_marked
+compressor/faces_cropped

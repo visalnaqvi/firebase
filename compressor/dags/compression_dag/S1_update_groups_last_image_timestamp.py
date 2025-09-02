@@ -17,7 +17,7 @@ def update_groups_metadata():
         cur = conn.cursor(cursor_factory=DictCursor)
 
         # 1. Get all groups with heating status
-        cur.execute("SELECT id FROM groups WHERE status = 'heating'")
+        cur.execute("SELECT id FROM groups")
         groups = cur.fetchall()
 
         if not groups:

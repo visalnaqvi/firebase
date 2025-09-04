@@ -33,14 +33,21 @@ def cleanup_expired_images():
             "DELETE FROM faces WHERE image_id = ANY(%s);",
             (expired_ids,)
         )
-        print(f"Deleted {cur.rowcount} faces linked to expired images.")
+        print(f"🗑️ Deleted {cur.rowcount} faces linked to expired images.")
 
-        # 3️⃣ Delete images
+        # 3️⃣ Delete from album_images
+        cur.execute(
+            "DELETE FROM album_images WHERE image_id = ANY(%s);",
+            (expired_ids,)
+        )
+        print(f"🗑️ Deleted {cur.rowcount} album-image links.")
+
+        # 4️⃣ Delete images
         cur.execute(
             "DELETE FROM images WHERE id = ANY(%s);",
             (expired_ids,)
         )
-        print(f"Deleted {cur.rowcount} expired images.")
+        print(f"🗑️ Deleted {cur.rowcount} expired images.")
 
         conn.commit()
         print("✅ Cleanup complete.")

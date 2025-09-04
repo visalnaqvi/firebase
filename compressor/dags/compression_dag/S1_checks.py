@@ -127,7 +127,7 @@ TABLES = [
     
     # Trigger function to send notification
     """
-    CREATE TABLE process_status (
+    CREATE TABLE IF NOT EXISTS process_status (
     group_id INT,
     status TEXT
 );
@@ -135,6 +135,23 @@ TABLES = [
     """
     INSERT INTO process_status (group_id, status)
 VALUES (NULL, 'extraction');
+    """,
+    """
+    
+CREATE TABLE IF NOT EXISTS albums (
+    id SERIAL PRIMARY KEY,
+    group_id INT NOT NULL,
+    name TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+    """,
+    """
+    
+CREATE TABLE IF NOT EXISTS album_images (
+    album_id INT ,
+    image_id INT,
+   group_id INT 
+);
     """
 ]
 

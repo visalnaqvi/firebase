@@ -357,6 +357,13 @@ class HybridFaceIndexer:
                         "cloth": VectorParams(size=512, distance=Distance.COSINE)
                     }
                 )
+                
+            image_collection_name = f"image_{collection_name}"
+            if not self.qdrant.collection_exists(image_collection_name):
+                self.qdrant.create_collection(
+                    collection_name=image_collection_name,
+                    vectors_config=VectorParams(size=512, distance=Distance.COSINE)
+                )
             logger.info(f"Collection {collection_name} setup completed")
         except Exception as e:
             logger.error(f"Failed to setup collection {collection_name}: {e}")
@@ -422,6 +429,18 @@ class HybridFaceIndexer:
         img = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
 
         return img
+    def extract_full_image_embedding(self, image_input) -> torch.Tensor:
+        """Extract complete image embeddings using the existing OpenCLIP model"""
+        try:
+            img_tensor = self.preprocess(image_input).unsqueeze(0).to(self.device)
+
+            with torch.no_grad():
+                emb = self.model.encode_image(img_tensor)
+                emb = emb / emb.norm(dim=-1, keepdim=True)
+                return emb[0]
+        except Exception as e:
+            logger.error(f"Failed to extract full image embedding: {e}")
+            raise
 
     def deduplicate_faces(self, faces_with_bboxes):
         """Remove duplicate faces based on overlap ratio"""
@@ -458,12 +477,35 @@ class HybridFaceIndexer:
             if img is None:
                 logger.warning(f"Failed to decode image {image_id}")
                 return []
-
-            # Step 1: Detect all faces in the original image
-            all_faces = self.face_app.get(img)
-            if not all_faces:
-                logger.info(f"No faces detected in image {image_id}")
-                return []
+            try:
+                # Convert OpenCV image to PIL for embedding extraction
+                pil_img = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+                image_emb = self.extract_full_image_embedding(pil_img)
+                
+                # Store in image collection
+                image_collection_name = f"image_{collection_name}"
+                self.qdrant.upsert(
+                    collection_name=image_collection_name,
+                    points=[
+                        PointStruct(
+                            id=str(image_id),  # Use image_id as point_id
+                            vector=image_emb.cpu().tolist(),
+                            payload={
+                                "image_id": image_id,
+                                "group_id": collection_name,
+                            }
+                        )
+                    ]
+                )
+                logger.info(f"Stored image embedding for image {image_id}")
+                
+            except Exception as e:
+                logger.error(f"Failed to extract/store image embedding for {image_id}: {e}")
+                # Step 1: Detect all faces in the original image
+                all_faces = self.face_app.get(img)
+                if not all_faces:
+                    logger.info(f"No faces detected in image {image_id}")
+                    return []
 
             # Step 2: YOLO person detection
             results = yolo_model(img)[0]

@@ -7,6 +7,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 
 def update_groups_metadata():
     try:
+        #DEV DATABASE
         conn = psycopg2.connect(
             host="ballast.proxy.rlwy.net",
             port="56193",
@@ -14,6 +15,13 @@ def update_groups_metadata():
             user="postgres",
             password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
         )
+        # conn = psycopg2.connect(
+        #       host="nozomi.proxy.rlwy.net",
+        #         port="24794",
+        #         dbname="railway",
+        #         user="postgres",
+        #         password="kdVrNTrtLzzAaOXzKHaJCzhmoHnSDKDG"
+        # )
         cur = conn.cursor(cursor_factory=DictCursor)
 
         # 1. Get all groups with heating status

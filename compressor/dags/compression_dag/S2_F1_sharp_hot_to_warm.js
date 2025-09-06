@@ -8,11 +8,17 @@ const serviceAccount = require('./firebase-key.json');
 const exifParser = require('exif-parser')
 admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
+    // DEV BUCKET
     storageBucket: 'gallery-585ee.firebasestorage.app',
+    // PROD BUCKET
+    // storageBucket: 'gallery-585ee-production',
 });
 const bucket = admin.storage().bucket();
 
 const pool = new Pool({
+    // PROD DATABASE
+    // connectionString: "postgresql://postgres:kdVrNTrtLzzAaOXzKHaJCzhmoHnSDKDG@nozomi.proxy.rlwy.net:24794/railway"
+    // DEV DATABASE
     connectionString: "postgresql://postgres:AfldldzckDWtkskkAMEhMaDXnMqknaPY@ballast.proxy.rlwy.net:56193/railway"
     // connectionString: "postgresql://postgres:admin@localhost:5432/postgres"
 });
@@ -63,6 +69,7 @@ async function processSingleImage(image, planType) {
         const baseImage = sharp(originalBuffer);
         const strippedBuffer = await baseImage.rotate().toBuffer();
         let compressedBuffer;
+        let compressedBuffer3k;
         console.log(`✅ Stripped metadata for Image ${id}`);
         if (planType == 'pro') {
             // Upload stripped image
@@ -74,39 +81,56 @@ async function processSingleImage(image, planType) {
                 },
             });
             console.log(`✅ Stored stripped Image ${id} to Firebase`);
-        } else {
-            // Create 3000px version (or use original if already smaller)
-
-            if (originalWidth <= 3000) {
-                // Use stripped buffer as compressed since it's already <= 3000px
-                compressedBuffer = strippedBuffer;
-                console.log(`✅ Image ${id} is ${originalWidth}px wide(≤ 3000px), using original size`);
-            } else {
-                // Resize to 3000px
-                compressedBuffer = await baseImage.rotate().resize({ width: 3000 }).jpeg().toBuffer();
-                console.log(`✅ Resized Image ${id} from ${originalWidth}px to 3000px`);
-            }
-            const compressedPath = `compressed_${id}`;
-            await bucket.file(compressedPath).save(compressedBuffer, {
-                contentType: 'image/jpeg',
-                metadata: {
-                    cacheControl: "public, max-age=31536000, immutable"
-                },
-            });
-
-            console.log(`✅ Stored 3000px Image ${id} to Firebase`);
         }
-        // Create 400px thumbnail
-        const thumbBuffer = baseImage.rotate().resize({ width: 200 }).jpeg().toBuffer();
-        const thumbPath = `thumbnail_${id}`;
-        const thumbFile = bucket.file(thumbPath);
-
-        await thumbFile.save(thumbBuffer, {
-            contentType: "image/jpeg",
+        if (originalWidth <= 1000) {
+            // Use stripped buffer as compressed since it's already <= 3000px
+            compressedBuffer = strippedBuffer;
+            console.log(`✅ Image ${id} is ${originalWidth}px wide(≤ 1000px), using original size`);
+        } else {
+            // Resize to 3000px
+            compressedBuffer = await baseImage.rotate().resize({ width: 1000 }).jpeg().toBuffer();
+            console.log(`✅ Resized Image ${id} from ${originalWidth}px to 1000px`);
+        }
+        const compressedPath = `compressed_${id}`;
+        await bucket.file(compressedPath).save(compressedBuffer, {
+            contentType: 'image/jpeg',
             metadata: {
                 cacheControl: "public, max-age=31536000, immutable"
             },
         });
+
+        if (originalWidth <= 3000) {
+            // Use stripped buffer as compressed since it's already <= 3000px
+            compressedBuffer3k = strippedBuffer;
+            console.log(`✅ Image ${id} is ${originalWidth}px wide(≤ 3000px), using original size`);
+        } else {
+            // Resize to 3000px
+            compressedBuffer3k = await baseImage.rotate().resize({ width: 3000 }).jpeg().toBuffer();
+            console.log(`✅ Resized Image ${id} from ${originalWidth}px to 3000px`);
+        }
+        const compressedPath3k = `compressed_3k_${id}`;
+        await bucket.file(compressedPath3k).save(compressedBuffer3k, {
+            contentType: 'image/jpeg',
+            metadata: {
+                cacheControl: "public, max-age=31536000, immutable"
+            },
+        });
+
+        console.log(`✅ Stored 3000px Image ${id} to Firebase`);
+        // Create 400px thumbnail
+        const thumbBuffer = await baseImage.rotate().resize({ width: 200 }).jpeg().toBuffer();
+        const thumbPath = `thumbnail_${id}`;
+        await bucket.file(thumbPath).save(thumbBuffer, {
+            contentType: 'image/jpeg',
+            metadata: {
+                cacheControl: "public, max-age=31536000, immutable"
+            },
+        });
+        console.log(`🌐 Thumbnail URL for ${id}`);
+        console.log(`✅ Created 100px thumbnail for Image ${id}`);
+        const thumbFile = bucket.file(thumbPath);
+        const comrpessedFile = bucket.file(compressedPath);
+        const comrpessedFile3k = bucket.file(compressedPath3k);
 
         console.log(`✅ Uploaded thumbnail for Image ${id} as ${thumbPath}`);
 
@@ -116,8 +140,17 @@ async function processSingleImage(image, planType) {
             expires: '03-09-2491' // Far future date for permanent access
         });
 
-        console.log(`🌐 Thumbnail URL for ${id}`);
-        console.log(`✅ Created 100px thumbnail for Image ${id}`);
+        const [downloadURLCompressed] = await comrpessedFile.getSignedUrl({
+            action: 'read',
+            expires: '03-09-2491' // Far future date for permanent access
+        });
+
+        const [downloadURLCompressed_3k] = await comrpessedFile3k.getSignedUrl({
+            action: 'read',
+            expires: '03-09-2491' // Far future date for permanent access
+        });
+
+        console.log(`✅ CSigned URL generated for image ${id}`);
 
 
         return {
@@ -131,7 +164,9 @@ async function processSingleImage(image, planType) {
                 compressed_location: null,
                 artist: artist,
                 dateCreated: dateTaken,
-                location: downloadURL
+                location: downloadURL,
+                signedUrl: downloadURLCompressed,
+                signedUrl3k: downloadURLCompressed_3k
             }
         };
     } catch (error) {
@@ -184,7 +219,7 @@ async function performBatchUpdate(client, successfulResults) {
         const { id, data } = result;
 
         valuesClauses.push(
-            `($${paramIndex}::uuid, $${paramIndex + 1}, $${paramIndex + 2}::jsonb, $${paramIndex + 3}::bytea, $${paramIndex + 4}::bytea, $${paramIndex + 5}, $${paramIndex + 6}, $${paramIndex + 7} , $${paramIndex + 8})`
+            `($${paramIndex}::uuid, $${paramIndex + 1}, $${paramIndex + 2}::jsonb, $${paramIndex + 3}::bytea, $${paramIndex + 4}::bytea, $${paramIndex + 5}, $${paramIndex + 6}, $${paramIndex + 7} , $${paramIndex + 8} , $${paramIndex + 9} , $${paramIndex + 10})`
         );
 
         allParams.push(
@@ -196,10 +231,12 @@ async function performBatchUpdate(client, successfulResults) {
             data.compressed_location,
             data.artist,
             data.dateCreated,
-            data.location
+            data.location,
+            data.signedUrl,
+            data.signedUrl3k
         );
 
-        paramIndex += 9;
+        paramIndex += 11;
     }
 
     const batchUpdateQuery = `
@@ -212,9 +249,11 @@ async function performBatchUpdate(client, successfulResults) {
             artist = data.artist,
             date_taken = data.dateCreated::timestamp,
             last_processed_at = NOW(),
-            location = data.location
+            location = data.location,
+            signed_url = data.signedUrl,
+            signed_url_3k = data.signedUrl3k
         FROM (VALUES ${valuesClauses.join(', ')})
-            AS data(id, status, json_meta_data, thumb_byte, image_byte, compressed_location, artist, dateCreated , location)
+            AS data(id, status, json_meta_data, thumb_byte, image_byte, compressed_location, artist, dateCreated , location , signedUrl , signedUrl3k)
         WHERE images.id = data.id
     `;
 
@@ -265,9 +304,11 @@ async function performChunkedUpdates(client, successfulResults) {
     artist = $6,
     date_taken = $7,
     last_processed_at = NOW(),
-    location = $8
-                         WHERE id = $9`,
-                        [data.status, data.json_meta_data, data.thumb_byte, data.image_byte, data.compressed_location, data.artist, data.dateCreated, data.location, id]
+    location = $8,
+    signed_url = $9,
+    signed_url_3k = $10
+                         WHERE id = $11`,
+                        [data.status, data.json_meta_data, data.thumb_byte, data.image_byte, data.compressed_location, data.artist, data.dateCreated, data.location, data.signedUrl, data.signedUrl3k, id]
                     );
                     totalUpdated++;
                 } catch (error) {
@@ -395,9 +436,11 @@ async function updateDatabaseBatch(client, results) {
     artist = $6,
     date_taken = $7,
     last_processed_at = NOW(),
-    location = $8
-                         WHERE id = $9`,
-                        [data.status, data.json_meta_data, data.thumb_byte, data.image_byte, data.compressed_location, data.artist, data.dateCreated, data.location, id]
+    location = $8,
+    signed_url = $9,
+    signed_url_3k = $10
+                         WHERE id = $11`,
+                        [data.status, data.json_meta_data, data.thumb_byte, data.image_byte, data.compressed_location, data.artist, data.dateCreated, data.location, data.signedUrl, data.signedUrl3k, id]
                     );
                     await client.query('COMMIT');
 

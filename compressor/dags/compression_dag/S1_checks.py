@@ -1,5 +1,6 @@
 import psycopg2
 
+# dev database
 # def get_db_connection():
 #     return psycopg2.connect(
 #          host="ballast.proxy.rlwy.net",
@@ -9,15 +10,27 @@ import psycopg2
 #         password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
 #     )
 
+#localdatabase
+# def get_db_connection():
+#     return psycopg2.connect(
+#          host="localhost",
+#         port="5432",
+#         dbname="postgres",
+#         user="postgres",
+#         password="admin"
+#     )
 
+
+#prod database
 def get_db_connection():
     return psycopg2.connect(
-         host="localhost",
-        port="5432",
-        dbname="postgres",
+         host="nozomi.proxy.rlwy.net",
+        port="24794",
+        dbname="railway",
         user="postgres",
-        password="admin"
+        password="kdVrNTrtLzzAaOXzKHaJCzhmoHnSDKDG"
     )
+
 
 
 TABLES = [
@@ -80,9 +93,11 @@ TABLES = [
         artist text,
         date_created text,
         signed_url TEXT,
+        signed_url_3k TEXT,
         expire_time TIMESTAMPTZ,
         date_taken TIMESTAMP,
-        highlight boolean
+        highlight boolean,
+        similar_image_id text
     );
     """,
     """
@@ -149,7 +164,7 @@ CREATE TABLE IF NOT EXISTS albums (
     
 CREATE TABLE IF NOT EXISTS album_images (
     album_id INT ,
-    image_id INT,
+    image_id text,
    group_id INT 
 );
     """

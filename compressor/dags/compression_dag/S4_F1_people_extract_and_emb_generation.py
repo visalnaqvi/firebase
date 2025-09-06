@@ -21,7 +21,7 @@ import math
 import open_clip
 import firebase_admin
 from firebase_admin import credentials, storage
-
+import time
 def _normalize(value, min_val, max_val):
     if max_val <= min_val:
         return 0.0
@@ -358,12 +358,6 @@ class HybridFaceIndexer:
                     }
                 )
                 
-            image_collection_name = f"image_{collection_name}"
-            if not self.qdrant.collection_exists(image_collection_name):
-                self.qdrant.create_collection(
-                    collection_name=image_collection_name,
-                    vectors_config=VectorParams(size=512, distance=Distance.COSINE)
-                )
             logger.info(f"Collection {collection_name} setup completed")
         except Exception as e:
             logger.error(f"Failed to setup collection {collection_name}: {e}")
@@ -472,40 +466,22 @@ class HybridFaceIndexer:
     def process_image(self, image_id: int, location, yolo_model, collection_name: str) -> List[dict]:
         """Process single image with improved face-clothing association"""
         try:
+            st_firebase_read = time.time()
+            
             # Load original image
             img = self.read_image_from_firebase(image_id)
+            
+            et_firebase_read = time.time()
+            logger.info(f"⏰ Total time getting image from firebase {st_firebase_read-et_firebase_read}s")
             if img is None:
                 logger.warning(f"Failed to decode image {image_id}")
                 return []
-            try:
-                # Convert OpenCV image to PIL for embedding extraction
-                pil_img = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-                image_emb = self.extract_full_image_embedding(pil_img)
-                
-                # Store in image collection
-                image_collection_name = f"image_{collection_name}"
-                self.qdrant.upsert(
-                    collection_name=image_collection_name,
-                    points=[
-                        PointStruct(
-                            id=str(image_id),  # Use image_id as point_id
-                            vector=image_emb.cpu().tolist(),
-                            payload={
-                                "image_id": image_id,
-                                "group_id": collection_name,
-                            }
-                        )
-                    ]
-                )
-                logger.info(f"Stored image embedding for image {image_id}")
-                
-            except Exception as e:
-                logger.error(f"Failed to extract/store image embedding for {image_id}: {e}")
-                # Step 1: Detect all faces in the original image
-                all_faces = self.face_app.get(img)
-                if not all_faces:
-                    logger.info(f"No faces detected in image {image_id}")
-                    return []
+            st_generate_emd = time.time()
+            # Step 1: Detect all faces in the original image
+            all_faces = self.face_app.get(img)
+            if not all_faces:
+                logger.info(f"No faces detected in image {image_id}")
+                return []
 
             # Step 2: YOLO person detection
             results = yolo_model(img)[0]
@@ -642,7 +618,8 @@ class HybridFaceIndexer:
                         "quality_score": -1,
                         "insight_face_confidence":insight_face_confidence
                     })
-                    
+                    et_generate_emd = time.time()
+                    logger.info(f"⏰ Total time for generating embedding {st_generate_emd-et_generate_emd}s")
                 except Exception as e:
                     logger.error(f"Failed to process face in image {image_id}: {e}")
                     continue
@@ -687,22 +664,32 @@ def process_group(group_id: int, indexer: HybridFaceIndexer, yolo_model) -> None
         processed_count = 0
         
         while True:
+            st_fetch_image_bt = time.time()
+            
             unprocessed = DatabaseManager.fetch_unprocessed_images(group_id, config.BATCH_SIZE)
             
+            et_fetch_image_bt = time.time()
+            logger.info(f"⏰ Total time for fetch unprocessed images of group {st_fetch_image_bt-et_fetch_image_bt}s")
             if not unprocessed:
                 logger.info(f"No more unprocessed images for group {group_id}")
                 break
             
             logger.info(f"Found {len(unprocessed)} unprocessed images for group {group_id}")
+            st_process_image_bt = time.time()
             
             records = indexer.process_images_batch(unprocessed, yolo_model, group_id)
+            
+            et_process_image_bt = time.time()
+            logger.info(f"⏰ Total time for processing 1 batch {st_process_image_bt-et_process_image_bt}s")
             processed_image_ids = [img_id for img_id, _ in unprocessed]
             
+            st_image_bt_db_update = time.time()
             if records:
                 DatabaseManager.insert_faces_batch(records, group_id)
             
             DatabaseManager.mark_images_processed_batch(processed_image_ids)
-            
+            et_image_bt_db_update = time.time()
+            logger.info(f"⏰ Total time for update 1 batch of iamge in db {st_image_bt_db_update-et_image_bt_db_update}s")
             processed_count += len(unprocessed)
             logger.info(f"Group {group_id}: Processed {processed_count} images so far, {len(records)} faces indexed")
             
@@ -737,10 +724,25 @@ def main():
             
             for group_id in groups:
                 try:
+                    st_group_fetch = time.time()
+                    
                     DatabaseManager.mark_group_process_status(group_id)
+                    
+                    et_group_fetch = time.time()
+                    logger.info(f"⏰ Total time for fetching groups {st_group_fetch-et_group_fetch}s")
+                    st_group_process = time.time()
+                    
                     process_group(group_id, indexer, yolo_model)
+                    
+                    et_group_process = time.time()
+                    logger.info(f"⏰ Total time for process group {st_group_process-et_group_process}s")
+                    st_group_db_update = time.time()
+                    
                     DatabaseManager.mark_group_processed(group_id)
                     DatabaseManager.mark_group_process_status(0)
+                    
+                    et_group_db_update = time.time()
+                    logger.info(f"⏰ Total time for group status update in db {st_group_db_update-st_group_db_update}s")
                 except Exception as e:
                     logger.error(f"Failed to process group {group_id}, continuing with next group: {e}")
                     continue

@@ -472,7 +472,7 @@ class HybridFaceIndexer:
             img = self.read_image_from_firebase(image_id)
             
             et_firebase_read = time.time()
-            logger.info(f"⏰ Total time getting image from firebase {st_firebase_read-et_firebase_read}s")
+            logger.info(f"⏰ Total time getting image from firebase {et_firebase_read-st_firebase_read}s")
             if img is None:
                 logger.warning(f"Failed to decode image {image_id}")
                 return []
@@ -592,6 +592,9 @@ class HybridFaceIndexer:
                     #     quality_score = 0.0
                     
                     # Insert into Qdrant
+                    
+                    # et_generate_up = time.time()
+                    # logger.info(f"⏰ Total time for processing image before upsert {et_generate_up-st_firebase_read}s")
                     self.qdrant.upsert(
                         collection_name=collection_name,
                         points=[
@@ -618,12 +621,12 @@ class HybridFaceIndexer:
                         "quality_score": -1,
                         "insight_face_confidence":insight_face_confidence
                     })
-                    et_generate_emd = time.time()
-                    logger.info(f"⏰ Total time for generating embedding {st_generate_emd-et_generate_emd}s")
+                    
                 except Exception as e:
                     logger.error(f"Failed to process face in image {image_id}: {e}")
                     continue
-
+            et_generate_emd = time.time()
+            logger.info(f"⏰ Total time for processing image with upsert {et_generate_emd-st_firebase_read}s")
             logger.info(f"Processed image {image_id}: {len(records)} faces detected")
             return records
             
@@ -664,32 +667,32 @@ def process_group(group_id: int, indexer: HybridFaceIndexer, yolo_model) -> None
         processed_count = 0
         
         while True:
-            st_fetch_image_bt = time.time()
+            # st_fetch_image_bt = time.time()
             
             unprocessed = DatabaseManager.fetch_unprocessed_images(group_id, config.BATCH_SIZE)
             
-            et_fetch_image_bt = time.time()
-            logger.info(f"⏰ Total time for fetch unprocessed images of group {st_fetch_image_bt-et_fetch_image_bt}s")
+            # et_fetch_image_bt = time.time()
+            # logger.info(f"⏰ Total time for fetch unprocessed images of group {st_fetch_image_bt-et_fetch_image_bt}s")
             if not unprocessed:
                 logger.info(f"No more unprocessed images for group {group_id}")
                 break
             
             logger.info(f"Found {len(unprocessed)} unprocessed images for group {group_id}")
-            st_process_image_bt = time.time()
+            # st_process_image_bt = time.time()
             
             records = indexer.process_images_batch(unprocessed, yolo_model, group_id)
             
-            et_process_image_bt = time.time()
-            logger.info(f"⏰ Total time for processing 1 batch {st_process_image_bt-et_process_image_bt}s")
+            # et_process_image_bt = time.time()
+            # logger.info(f"⏰ Total time for processing 1 batch {st_process_image_bt-et_process_image_bt}s")
             processed_image_ids = [img_id for img_id, _ in unprocessed]
             
-            st_image_bt_db_update = time.time()
+            # st_image_bt_db_update = time.time()
             if records:
                 DatabaseManager.insert_faces_batch(records, group_id)
             
             DatabaseManager.mark_images_processed_batch(processed_image_ids)
-            et_image_bt_db_update = time.time()
-            logger.info(f"⏰ Total time for update 1 batch of iamge in db {st_image_bt_db_update-et_image_bt_db_update}s")
+            # et_image_bt_db_update = time.time()
+            # logger.info(f"⏰ Total time for update 1 batch of iamge in db {st_image_bt_db_update-et_image_bt_db_update}s")
             processed_count += len(unprocessed)
             logger.info(f"Group {group_id}: Processed {processed_count} images so far, {len(records)} faces indexed")
             
@@ -724,25 +727,25 @@ def main():
             
             for group_id in groups:
                 try:
-                    st_group_fetch = time.time()
+                    # st_group_fetch = time.time()
                     
                     DatabaseManager.mark_group_process_status(group_id)
                     
-                    et_group_fetch = time.time()
-                    logger.info(f"⏰ Total time for fetching groups {st_group_fetch-et_group_fetch}s")
-                    st_group_process = time.time()
+                    # et_group_fetch = time.time()
+                    # logger.info(f"⏰ Total time for fetching groups {st_group_fetch-et_group_fetch}s")
+                    # st_group_process = time.time()
                     
                     process_group(group_id, indexer, yolo_model)
                     
-                    et_group_process = time.time()
-                    logger.info(f"⏰ Total time for process group {st_group_process-et_group_process}s")
-                    st_group_db_update = time.time()
+                    # et_group_process = time.time()
+                    # logger.info(f"⏰ Total time for process group {st_group_process-et_group_process}s")
+                    # st_group_db_update = time.time()
                     
                     DatabaseManager.mark_group_processed(group_id)
                     DatabaseManager.mark_group_process_status(0)
                     
-                    et_group_db_update = time.time()
-                    logger.info(f"⏰ Total time for group status update in db {st_group_db_update-st_group_db_update}s")
+                    # et_group_db_update = time.time()
+                    # logger.info(f"⏰ Total time for group status update in db {st_group_db_update-st_group_db_update}s")
                 except Exception as e:
                     logger.error(f"Failed to process group {group_id}, continuing with next group: {e}")
                     continue

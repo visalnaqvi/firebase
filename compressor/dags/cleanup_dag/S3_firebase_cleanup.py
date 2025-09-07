@@ -31,12 +31,15 @@ def cleanup():
         base_id = (
             filename.replace("compressed_", "")
                     .replace("thumbnail_", "")
+                    .replace("compressed_3k_", "")
+                    .replace("u_", "")
+                    .replace("stripped_", "")
         )
 
         # 4. Delete orphan sets
         if base_id not in valid_ids:
             print(f"Deleting orphan files for: {base_id}")
-            for prefix in ["", "compressed_", "thumbnail_"]:
+            for prefix in ["u_", "compressed_", "thumbnail_" , "compressed_3k_" , "stripped_" , ""]:
                 blob_to_delete = bucket.blob(f"{prefix}{base_id}")
                 try:
                     blob_to_delete.delete()

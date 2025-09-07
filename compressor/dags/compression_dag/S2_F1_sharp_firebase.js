@@ -131,19 +131,9 @@ async function processSingleImage(image, planType) {
         const strippedBuffer = await baseImage.rotate().toBuffer();
         let compressedBuffer;
         let compressedBuffer3k;
-        console.log(`✅ Stripped metadata for Image ${id}`);
 
-        if (planType == 'pro') {
-            // Upload stripped image
-            const strippedPath = `compressed_${id}`;
-            await bucket.file(strippedPath).save(strippedBuffer, {
-                contentType: "image/jpeg",
-                metadata: {
-                    cacheControl: "public, max-age=31536000, immutable"
-                },
-            });
-            console.log(`✅ Stored stripped Image ${id} to Firebase`);
-        }
+
+        console.log(`✅ Stripped metadata for Image ${id}`);
 
         if (originalWidth <= 1000) {
             // Use stripped buffer as compressed since it's already <= 1000px
@@ -162,24 +152,59 @@ async function processSingleImage(image, planType) {
             },
         });
 
-        if (originalWidth <= 3000) {
-            // Use stripped buffer as compressed since it's already <= 3000px
-            compressedBuffer3k = strippedBuffer;
-            console.log(`✅ Image ${id} is ${originalWidth}px wide(≤ 3000px), using original size`);
-        } else {
-            // Resize to 3000px
-            compressedBuffer3k = await baseImage.rotate().resize({ width: 3000 }).jpeg().toBuffer();
-            console.log(`✅ Resized Image ${id} from ${originalWidth}px to 3000px`);
-        }
-        const compressedPath3k = `compressed_3k_${id}`;
-        await bucket.file(compressedPath3k).save(compressedBuffer3k, {
-            contentType: 'image/jpeg',
-            metadata: {
-                cacheControl: "public, max-age=31536000, immutable"
-            },
-        });
 
-        console.log(`✅ Stored 3000px Image ${id} to Firebase`);
+        let downloadURLStripped;
+        if (planType == 'elite') {
+            // Upload stripped image
+            const strippedPath = `stripped_${id}`;
+            await bucket.file(strippedPath).save(strippedBuffer, {
+                contentType: "image/jpeg",
+                metadata: {
+                    cacheControl: "public, max-age=31536000, immutable"
+                },
+            });
+            console.log(`✅ Stored stripped Image ${id} to Firebase`);
+            const strippedFile = bucket.file(strippedPath);
+
+            const [downloadURLStripped_url] = await strippedFile.getSignedUrl({
+                action: 'read',
+                expires: '03-09-2491'
+            });
+
+            downloadURLStripped = downloadURLStripped_url
+        }
+
+        let downloadURLCompressed_3k;
+        if (planType != 'lite') {
+            if (originalWidth <= 3000) {
+                // Use stripped buffer as compressed since it's already <= 3000px
+                compressedBuffer3k = strippedBuffer;
+                console.log(`✅ Image ${id} is ${originalWidth}px wide(≤ 3000px), using original size`);
+            } else {
+                // Resize to 3000px
+                compressedBuffer3k = await baseImage.rotate().resize({ width: 3000 }).jpeg().toBuffer();
+                console.log(`✅ Resized Image ${id} from ${originalWidth}px to 3000px`);
+            }
+            const compressedPath3k = `compressed_3k_${id}`;
+            await bucket.file(compressedPath3k).save(compressedBuffer3k, {
+                contentType: 'image/jpeg',
+                metadata: {
+                    cacheControl: "public, max-age=31536000, immutable"
+                },
+            });
+
+            console.log(`✅ Stored 3000px Image ${id} to Firebase`);
+
+            const compressedFile3k = bucket.file(compressedPath3k);
+
+            const [downloadURLCompressed_3k_url] = await compressedFile3k.getSignedUrl({
+                action: 'read',
+                expires: '03-09-2491'
+            });
+
+            downloadURLCompressed_3k = downloadURLCompressed_3k_url
+        }
+
 
         // Create 200px thumbnail
         const thumbBuffer = await baseImage.rotate().resize({ width: 200 }).jpeg().toBuffer();
@@ -194,7 +219,7 @@ async function processSingleImage(image, planType) {
 
         const thumbFile = bucket.file(thumbPath);
         const compressedFile = bucket.file(compressedPath);
-        const compressedFile3k = bucket.file(compressedPath3k);
+
 
         // Get signed URLs
         const [downloadURL] = await thumbFile.getSignedUrl({
@@ -207,10 +232,7 @@ async function processSingleImage(image, planType) {
             expires: '03-09-2491'
         });
 
-        const [downloadURLCompressed_3k] = await compressedFile3k.getSignedUrl({
-            action: 'read',
-            expires: '03-09-2491'
-        });
+
 
         console.log(`✅ Signed URLs generated for image ${id}`);
 
@@ -233,7 +255,8 @@ async function processSingleImage(image, planType) {
                 dateCreated: dateTaken,
                 location: downloadURL,
                 signedUrl: downloadURLCompressed,
-                signedUrl3k: downloadURLCompressed_3k
+                signedUrl3k: downloadURLCompressed_3k,
+                signedUrlStripped: downloadURLStripped
             }
         };
     } catch (error) {
@@ -434,7 +457,7 @@ async function performBatchInsert(client, successfulResults) {
         const { data } = result;
 
         valuesClauses.push(
-            `($${paramIndex}::uuid, $${paramIndex + 1}, $${paramIndex + 2}, $${paramIndex + 3}, $${paramIndex + 4}::timestamp, $${paramIndex + 5}, $${paramIndex + 6}::jsonb, $${paramIndex + 7}::bytea, $${paramIndex + 8}::bytea, $${paramIndex + 9}, $${paramIndex + 10}, $${paramIndex + 11}::timestamp, $${paramIndex + 12}, $${paramIndex + 13}, $${paramIndex + 14})`
+            `($${paramIndex}::uuid, $${paramIndex + 1}, $${paramIndex + 2}, $${paramIndex + 3}, $${paramIndex + 4}::timestamp, $${paramIndex + 5}, $${paramIndex + 6}::jsonb, $${paramIndex + 7}::bytea, $${paramIndex + 8}::bytea, $${paramIndex + 9}, $${paramIndex + 10}, $${paramIndex + 11}::timestamp, $${paramIndex + 12}, $${paramIndex + 13}, $${paramIndex + 14} , $${paramIndex + 15} , $${paramIndex + 16}::timestamp)`
         );
 
         allParams.push(
@@ -452,15 +475,17 @@ async function performBatchInsert(client, successfulResults) {
             data.dateCreated,
             data.location,
             data.signedUrl,
-            data.signedUrl3k
+            data.signedUrl3k,
+            data.signedUrlStripped,
+            new Date()
         );
 
-        paramIndex += 15;
+        paramIndex += 17;
     }
 
     const batchInsertQuery = `
         INSERT INTO images 
-        (id, group_id, created_by_user, filename, uploaded_at, status, json_meta_data, thumb_byte, image_byte, compressed_location, artist, date_taken, location, signed_url, signed_url_3k)
+        (id, group_id, created_by_user, filename, uploaded_at, status, json_meta_data, thumb_byte, image_byte, compressed_location, artist, date_taken, location, signed_url, signed_url_3k , signed_url_stripped ,last_processed_at)
         VALUES ${valuesClauses.join(', ')}
         ON CONFLICT (id) DO UPDATE SET
             status = EXCLUDED.status,
@@ -473,7 +498,8 @@ async function performBatchInsert(client, successfulResults) {
             last_processed_at = NOW(),
             location = EXCLUDED.location,
             signed_url = EXCLUDED.signed_url,
-            signed_url_3k = EXCLUDED.signed_url_3k
+            signed_url_3k = EXCLUDED.signed_url_3k,
+            signed_url_stripped = EXCLUDED.signed_url_stripped
     `;
 
     console.log(`🔃 Executing batch insert query with ${allParams.length} parameters...`);
@@ -515,8 +541,8 @@ async function performChunkedInserts(client, successfulResults) {
                 try {
                     const insertResult = await client.query(
                         `INSERT INTO images
-                         (id, group_id, created_by_user, filename, uploaded_at, status, json_meta_data, thumb_byte, image_byte, compressed_location, artist, date_taken, location, signed_url, signed_url_3k)
-                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                         (id, group_id, created_by_user, filename, uploaded_at, status, json_meta_data, thumb_byte, image_byte, compressed_location, artist, date_taken, location, signed_url, signed_url_3k, signed_url_stripped , last_processed_at)
+                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15 , $16 ,NOW())
                          ON CONFLICT (id) DO UPDATE SET
                             status = EXCLUDED.status,
                             json_meta_data = EXCLUDED.json_meta_data,
@@ -528,8 +554,9 @@ async function performChunkedInserts(client, successfulResults) {
                             last_processed_at = NOW(),
                             location = EXCLUDED.location,
                             signed_url = EXCLUDED.signed_url,
-                            signed_url_3k = EXCLUDED.signed_url_3k`,
-                        [data.id, data.group_id, data.created_by_user, data.filename, data.uploaded_at, data.status, data.json_meta_data, data.thumb_byte, data.image_byte, data.compressed_location, data.artist, data.dateCreated, data.location, data.signedUrl, data.signedUrl3k]
+                            signed_url_3k = EXCLUDED.signed_url_3k,
+                            signed_url_stripped = EXCLUDED.signed_url_stripped`,
+                        [data.id, data.group_id, data.created_by_user, data.filename, data.uploaded_at, data.status, data.json_meta_data, data.thumb_byte, data.image_byte, data.compressed_location, data.artist, data.dateCreated, data.location, data.signedUrl, data.signedUrl3k, data.signedUrlStripped]
                     );
                     totalInserted += insertResult.rowCount;
                 } catch (error) {
@@ -631,8 +658,8 @@ async function insertIntoDatabaseBatch(client, results) {
                     const { data } = result;
                     const insertResult = await client.query(
                         `INSERT INTO images
-                         (id, group_id, created_by_user, filename, uploaded_at, status, json_meta_data, thumb_byte, image_byte, compressed_location, artist, date_taken, location, signed_url, signed_url_3k)
-                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                         (id, group_id, created_by_user, filename, uploaded_at, status, json_meta_data, thumb_byte, image_byte, compressed_location, artist, date_taken, location, signed_url, signed_url_3k , signed_url_stripped , last_processed_at)
+                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15 , $16 , NOW())
                          ON CONFLICT (id) DO UPDATE SET
                             status = EXCLUDED.status,
                             json_meta_data = EXCLUDED.json_meta_data,
@@ -644,8 +671,9 @@ async function insertIntoDatabaseBatch(client, results) {
                             last_processed_at = NOW(),
                             location = EXCLUDED.location,
                             signed_url = EXCLUDED.signed_url,
-                            signed_url_3k = EXCLUDED.signed_url_3k`,
-                        [data.id, data.group_id, data.created_by_user, data.filename, data.uploaded_at, data.status, data.json_meta_data, data.thumb_byte, data.image_byte, data.compressed_location, data.artist, data.dateCreated, data.location, data.signedUrl, data.signedUrl3k]
+                            signed_url_3k = EXCLUDED.signed_url_3k,
+                            signed_url_stripped = EXCLUDED.signed_url_stripped`,
+                        [data.id, data.group_id, data.created_by_user, data.filename, data.uploaded_at, data.status, data.json_meta_data, data.thumb_byte, data.image_byte, data.compressed_location, data.artist, data.dateCreated, data.location, data.signedUrl, data.signedUrl3k, data.signedUrlStripped]
                     );
                     await client.query('COMMIT');
 
@@ -911,7 +939,7 @@ async function processImages() {
 
             if (totalProcessedAllBatches === 0) {
                 console.log("⏸️ No unprocessed images found in entire cycle, waiting...");
-                await new Promise(res => setTimeout(res, 600000)); // wait 10 minutes
+                await new Promise(res => setTimeout(res, 300000)); // wait 5 minutes
             } else {
                 console.log(`🎉 Completed full processing cycle. Total batches: ${totalBatchesProcessed}, Total processed: ${totalProcessedAllBatches}, Total files cleaned up: ${totalCleanedAllBatches}`);
 

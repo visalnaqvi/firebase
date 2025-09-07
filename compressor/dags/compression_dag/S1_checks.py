@@ -94,6 +94,7 @@ TABLES = [
         date_created text,
         signed_url TEXT,
         signed_url_3k TEXT,
+        signed_url_stripped TEXT,
         expire_time TIMESTAMPTZ,
         date_taken TIMESTAMP,
         highlight boolean,

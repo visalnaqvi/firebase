@@ -29,7 +29,7 @@ class SimplifiedFaceGrouping:
         
         print(f"🔃 Fetching {limit} unassigned faces for group {group_id}")
         cursor.execute(
-            "SELECT id FROM faces WHERE group_id = %s AND person_id IS NULL LIMIT %s", 
+            "SELECT id FROM faces WHERE group_id = %s AND person_id IS NULL AND status != 'error' LIMIT %s", 
             (group_id, limit)
         )
         rows = cursor.fetchall()
@@ -405,6 +405,10 @@ class SimplifiedFaceGrouping:
             embedding_data = self.get_face_embedding(group_id, face_id)
             if not embedding_data:
                 print(f"   ⚠️ Could not get embedding for face {face_id}")
+                with get_db_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("UPDATE faces SET status = 'error' WHERE id = %s", (face_id,))
+                        conn.commit()
                 continue
             
             face_emb = embedding_data['face']

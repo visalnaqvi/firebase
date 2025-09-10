@@ -180,14 +180,14 @@ def expand_face_bbox_for_clothing(face_bbox, person_bbox, expansion_factor=2.0):
 
 @dataclass
 class Config:
-    BATCH_SIZE: int = 50  # Increased batch size
-    PARALLEL_LIMIT: int = 4  # Increased parallelism
+    BATCH_SIZE: int = 25  # Increased batch size
+    PARALLEL_LIMIT: int = 1  # Increased parallelism
     PERSON_CONFIDENCE_THRESHOLD: float = 0.5
     MAX_RETRIES: int = 3
     FACE_OVERLAP_THRESHOLD: float = 0.7
-    QDRANT_BATCH_SIZE: int = 100  # Batch insert to Qdrant
-    DB_BATCH_SIZE: int = 100  # Batch insert to DB
-    QDRANT_MAX_WORKERS:int = 10
+    QDRANT_BATCH_SIZE: int = 25  # Batch insert to Qdrant
+    DB_BATCH_SIZE: int = 25  # Batch insert to DB
+    QDRANT_MAX_WORKERS:int = 1
     
     # Connection configs
     QDRANT_HOST: str = os.getenv("QDRANT_HOST", "localhost")
@@ -502,7 +502,8 @@ class OptimizedFaceIndexer:
         """Read image from /warm-images cache, fallback to Firebase"""
         try:
             # Local path
-            local_path = os.path.join("/warm-images", f"compressed_{path}.jpg")
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            local_path = os.path.join(script_dir, "warm-images", f"compressed_{path}.jpg")
 
             if os.path.exists(local_path):
                 # ✅ Read from local cache
@@ -518,16 +519,23 @@ class OptimizedFaceIndexer:
             image_array = np.frombuffer(img_bytes, dtype=np.uint8)
             img = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
 
-            if img is not None:
-                # ✅ Save to local cache for future reads
-                os.makedirs("/warm-images", exist_ok=True)
-                cv2.imwrite(local_path, img)
-
             return img
 
         except Exception as e:
             logger.error(f"Failed to read image {path}: {e}")
             return None
+        
+    def delete_local_image(self, path: str):
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        local_path = os.path.join(script_dir, "warm-images", f"compressed_{path}.jpg")
+        try:
+            if os.path.exists(local_path):
+                os.remove(local_path)
+                print(f"🗑️ Deleted {local_path}")
+            else:
+                print(f"⚠️ File not found: {local_path}")
+        except Exception as e:
+            print(f"❌ Failed to delete {local_path}: {e}")
 
     def deduplicate_faces(self, faces_with_bboxes):
         """Remove duplicate faces based on overlap ratio"""
@@ -558,7 +566,7 @@ class OptimizedFaceIndexer:
         """Optimized single image processing"""
         try:
             # Load image
-            img = self.read_image_from_firebase(image_id)
+            img = self.read_image(image_id)
             if img is None:
                 return []
 
@@ -591,7 +599,7 @@ class OptimizedFaceIndexer:
                 record = self._process_single_face(face, face_bbox, person_boxes, img, image_id)
                 if record:
                     records.append(record)
-            
+            self.delete_local_image(image_id)
             return records
             
         except Exception as e:

@@ -4,8 +4,7 @@ const sharp = require('sharp');
 const path = require('path');
 const serviceAccount = require('./firebase-key.json');
 const exifParser = require('exif-parser')
-import fs from "fs/promises";
-import path from "path";
+const fs = require("fs").promises
 
 admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
@@ -170,7 +169,10 @@ async function processSingleImage(image, planType) {
                 cacheControl: "public, max-age=31536000, immutable"
             },
         });
-        await fs.writeFile(compressedPath, compressedBuffer);
+        const localCompressedPath = path.join(__dirname, "warm-images", `compressed_${id}.jpg`);
+
+        // Save locally
+        await fs.writeFile(localCompressedPath, compressedBuffer);
 
         let downloadURLStripped;
         if (planType == 'elite') {
@@ -738,7 +740,8 @@ async function processImagesBatches(client, images, planType) {
         const totalBatches = Math.ceil(images.length / BATCH_SIZE);
 
         console.log(`🔃 Processing batch ${batchNumber}/${totalBatches} (${batch.length} images)`);
-        const parallelLimit = await getDynamicParallelLimit(client);
+        // const parallelLimit = await getDynamicParallelLimit(client);
+        const parallelLimit = 10;
         // Process this batch
         const batchResults = await processImagesBatch(batch, planType, parallelLimit);
         allResults.push(...batchResults);
@@ -889,7 +892,7 @@ async function processImages() {
     try {
         while (true) {
             console.log("🔃 Starting new processing cycle");
-            await fs.mkdir("/warm-images", { recursive: true });
+            await fs.mkdir(path.join(__dirname, "warm-images"), { recursive: true });
             let pageToken = null;
             let hasMoreImages = true;
             let totalProcessedAllBatches = 0;

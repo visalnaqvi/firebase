@@ -88,7 +88,7 @@ TABLES = [
         last_accessed_at timestamp NULL,
         last_downloaded_at timestamp NULL,
         created_by_user int NOT NULL,
-        last_processed_at timestamp Null,
+        last_processed_at timestamptz Null,
         "size" int8 NULL,
         artist text,
         date_created text,

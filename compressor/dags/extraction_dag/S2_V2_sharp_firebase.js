@@ -169,7 +169,7 @@ async function processSingleImage(image, planType) {
                 cacheControl: "public, max-age=31536000, immutable"
             },
         });
-        const localCompressedPath = path.join(__dirname, "warm-images", `compressed_${id}.jpg`);
+        const localCompressedPath = path.join(__dirname, "warm-images", `${group_id}`, `compressed_${id}.jpg`);
 
         // Save locally
         await fs.writeFile(localCompressedPath, compressedBuffer);
@@ -801,12 +801,19 @@ async function processImagesBatches(client, images, planType) {
 }
 
 // Get plan type for a group
-async function getGroupPlanType(client, groupId) {
+async function getGroupPlanType(client, groupIds) {
     const { rows } = await client.query(
-        `SELECT plan_type FROM groups WHERE id = $1`,
-        [groupId]
+        `SELECT id, plan_type 
+     FROM groups 
+     WHERE id = ANY($1)`,
+        [groupIds]
     );
-    return rows[0]?.plan_type || 'basic';
+
+    // Map to [{ groupId, planType }]
+    return rows.map(r => ({
+        groupId: r.id,
+        planType: r.plan_type
+    }));
 }
 
 // Enhanced cleanup function for emergency/manual cleanup
@@ -892,7 +899,7 @@ async function processImages() {
     try {
         while (true) {
             console.log("🔃 Starting new processing cycle");
-            await fs.mkdir(path.join(__dirname, "warm-images"), { recursive: true });
+
             let pageToken = null;
             let hasMoreImages = true;
             let totalProcessedAllBatches = 0;
@@ -925,13 +932,14 @@ async function processImages() {
 
                 let batchProcessedCount = 0;
                 let batchCleanedCount = 0;
-
+                const planTypes = await getGroupPlanType(client, Object.keys(imagesByGroup));
                 // Process each group in this batch
                 for (const [groupId, groupImages] of Object.entries(imagesByGroup)) {
+                    await fs.mkdir(path.join(__dirname, "warm-images", `${groupId}`), { recursive: true });
                     console.log(`🔃 Processing ${groupImages.length} images for group ${groupId} (Batch ${totalBatchesProcessed + 1})`);
 
                     // Get plan type for this group
-                    const planType = await getGroupPlanType(client, groupId);
+                    const planType = planTypes[groupId];
                     console.log(`📋 Group ${groupId} plan type: ${planType}`);
 
                     // Process all images in this group

@@ -429,16 +429,16 @@ async function updateDatabaseBatch(client, results) {
                     const updateResult = await client.query(
                         `UPDATE images
                          SET status = $1,
-    json_meta_data = $2,
-    thumb_byte = $3,
-    image_byte = $4,
-    compressed_location = $5,
-    artist = $6,
-    date_taken = $7,
-    last_processed_at = NOW(),
-    location = $8,
-    signed_url = $9,
-    signed_url_3k = $10
+                            json_meta_data = $2,
+                            thumb_byte = $3,
+                            image_byte = $4,
+                            compressed_location = $5,
+                            artist = $6,
+                            date_taken = $7,
+                            last_processed_at = NOW(),
+                            location = $8,
+                            signed_url = $9,
+                            signed_url_3k = $10
                          WHERE id = $11`,
                         [data.status, data.json_meta_data, data.thumb_byte, data.image_byte, data.compressed_location, data.artist, data.dateCreated, data.location, data.signedUrl, data.signedUrl3k, id]
                     );

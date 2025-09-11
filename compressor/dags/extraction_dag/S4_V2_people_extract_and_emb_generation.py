@@ -25,7 +25,7 @@ import time
 from queue import Queue
 import threading
 from collections import defaultdict
-
+import json
 def _normalize(value, min_val, max_val):
     if max_val <= min_val:
         return 0.0
@@ -351,31 +351,83 @@ class DatabaseManager:
                 """
                 cur.execute(query, (group_id,))
                 conn.commit()
+    @staticmethod
+    def save_face_image(face_record: dict, group_id: int):
+        """Save only the thumbnail image to disk"""
+        try:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            group_folder = os.path.join(script_dir,"warm-images", str(group_id),"faces")
+            os.makedirs(group_folder, exist_ok=True)
 
+            if face_record.get("face_thumb_bytes"):
+                image_path = os.path.join(group_folder, f"{face_record['id']}.jpg")
+                with open(image_path, "wb") as f:
+                    f.write(face_record["face_thumb_bytes"])
+        except Exception as e:
+            logger.error(f"Failed to save face image for group {group_id}: {e}")
+    @staticmethod
+    def save_faces_json_batch(face_records: list[dict], group_id: int):
+        """Append a batch of face metadata (without bytes) to faces.json"""
+        try:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            group_folder = os.path.join(script_dir,"warm-images", str(group_id),"faces")
+            os.makedirs(group_folder, exist_ok=True)
+
+            json_path = os.path.join(group_folder, "faces.json")
+
+            # Load existing
+            if os.path.exists(json_path):
+                with open(json_path, "r", encoding="utf-8") as f:
+                    try:
+                        existing_data = json.load(f)
+                        if not isinstance(existing_data, list):
+                            existing_data = []
+                    except Exception:
+                        existing_data = []
+            else:
+                existing_data = []
+
+            # Convert batch (remove raw bytes)
+            new_records = [
+                {k: v for k, v in r.items() if k != "face_thumb_bytes"}
+                for r in face_records
+            ]
+
+            # Merge and save once
+            all_data = existing_data + new_records
+            with open(json_path, "w", encoding="utf-8") as f:
+                json.dump(all_data, f, indent=2)
+
+        except Exception as e:
+            logger.error(f"Failed to update faces.json for group {group_id}: {e}")
+    
     @staticmethod
     def insert_faces_batch(records: List[dict], group_id: int) -> None:
         """Insert detected faces in batches for better performance"""
         if not records:
             return
-        
+        for r in records:
+            DatabaseManager.save_face_image(r, group_id)
+
+        DatabaseManager.save_faces_json_batch(records, group_id)
         # Process in smaller batches to avoid memory issues
-        batch_size = config.DB_BATCH_SIZE
+        # batch_size = config.DB_BATCH_SIZE
         
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                for i in range(0, len(records), batch_size):
-                    batch = records[i:i+batch_size]
-                    query = """
-                    INSERT INTO faces (id, image_id, group_id, person_id, face_thumb_bytes, quality_score, insight_face_confidence)
-                    VALUES %s
-                    """
-                    values = [
-                        (r['id'], r['image_id'], group_id, r['person_id'], r['face_thumb_bytes'], r['quality_score'], r['insight_face_confidence'])
-                        for r in batch
-                    ]
-                    execute_values(cur, query, values)
-                conn.commit()
-                logger.info(f"Inserted {len(records)} faces for group {group_id}")
+        # with get_db_connection() as conn:
+        #     with conn.cursor() as cur:
+        #         for i in range(0, len(records), batch_size):
+        #             batch = records[i:i+batch_size]
+        #             query = """
+        #             INSERT INTO faces (id, image_id, group_id, person_id, face_thumb_bytes, quality_score, insight_face_confidence)
+        #             VALUES %s
+        #             """
+        #             values = [
+        #                 (r['id'], r['image_id'], group_id, r['person_id'], r['face_thumb_bytes'], r['quality_score'], r['insight_face_confidence'])
+        #                 for r in batch
+        #             ]
+        #             execute_values(cur, query, values)
+        #         conn.commit()
+        #         logger.info(f"Inserted {len(records)} faces for group {group_id}")
 
     @staticmethod
     def mark_images_processed_batch(image_ids: List[int]) -> None:
@@ -688,6 +740,8 @@ class OptimizedFaceIndexer:
         except Exception:
             pass
         return None
+    
+    
 
     def batch_upsert_to_qdrant(self, records: List[dict], collection_name: str) -> None:
         """Batch insert records to Qdrant in parallel for better performance"""

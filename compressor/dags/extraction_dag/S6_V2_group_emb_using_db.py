@@ -25,10 +25,12 @@ class SimplifiedFaceGrouping:
         self.faces_cache = {}  # In-memory cache for faces data
         self.error_faces = set()  # Track faces with errors
 
+
     def load_faces_json(self, group_id):
         """Load faces data from JSON file into memory cache"""
-        json_path = f"/warm-images/{group_id}/faces.json"
-        
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        json_path = os.path.join(script_dir, "warm-images",str(group_id), "faces", "faces.json")
+
         if not os.path.exists(json_path):
             print(f"❌ JSON file not found: {json_path}")
             return {}
@@ -53,7 +55,8 @@ class SimplifiedFaceGrouping:
             print(f"⚠️ No cache data found for group {group_id}")
             return
         
-        json_path = f"/warm-images/{group_id}/faces.json"
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        json_path = os.path.join(script_dir, "warm-images",  str(group_id),"faces",  "faces.json")
         
         try:
             # Ensure directory exists
@@ -65,10 +68,11 @@ class SimplifiedFaceGrouping:
             with open(json_path, 'w') as f:
                 json.dump(faces_list, f, indent=2)
             
-            print(f"✅ Saved {len(faces_list)} faces to JSON file")
+            print(f"✅ Saved {len(faces_list)} faces to JSON file at {json_path}")
             
         except Exception as e:
             print(f"❌ Error saving faces JSON: {e}")
+
 
     def get_unassigned_faces_batch(self, group_id, limit=10):
         """Get unassigned faces from memory cache"""

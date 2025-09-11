@@ -11,3 +11,4 @@ key.json
 compressor/compressed_img
 compressor/face_marked
 compressor/faces_cropped
+compressor/dags/extraction_dag/warm-images

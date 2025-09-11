@@ -173,7 +173,7 @@ def expand_face_bbox_for_clothing(face_bbox, person_bbox, expansion_factor=2.0):
 @dataclass
 class Config:
     BATCH_SIZE: int = 20
-    PARALLEL_LIMIT: int = 1
+    PARALLEL_LIMIT: int = 2
     PERSON_CONFIDENCE_THRESHOLD: float = 0.5
     MAX_RETRIES: int = 3
     FACE_OVERLAP_THRESHOLD: float = 0.7  # Threshold for considering faces as duplicates
@@ -667,32 +667,32 @@ def process_group(group_id: int, indexer: HybridFaceIndexer, yolo_model) -> None
         processed_count = 0
         
         while True:
-            # st_fetch_image_bt = time.time()
+            st_fetch_image_bt = time.time()
             
             unprocessed = DatabaseManager.fetch_unprocessed_images(group_id, config.BATCH_SIZE)
             
-            # et_fetch_image_bt = time.time()
-            # logger.info(f"⏰ Total time for fetch unprocessed images of group {st_fetch_image_bt-et_fetch_image_bt}s")
+            et_fetch_image_bt = time.time()
+            logger.info(f"⏰ Total time for fetch unprocessed images of group {et_fetch_image_bt-st_fetch_image_bt}s")
             if not unprocessed:
                 logger.info(f"No more unprocessed images for group {group_id}")
                 break
             
             logger.info(f"Found {len(unprocessed)} unprocessed images for group {group_id}")
-            # st_process_image_bt = time.time()
+            st_process_image_bt = time.time()
             
             records = indexer.process_images_batch(unprocessed, yolo_model, group_id)
             
-            # et_process_image_bt = time.time()
-            # logger.info(f"⏰ Total time for processing 1 batch {st_process_image_bt-et_process_image_bt}s")
+            et_process_image_bt = time.time()
+            logger.info(f"⏰ Total time for processing 1 batch {et_process_image_bt-st_process_image_bt}s")
             processed_image_ids = [img_id for img_id, _ in unprocessed]
             
-            # st_image_bt_db_update = time.time()
+            st_image_bt_db_update = time.time()
             if records:
                 DatabaseManager.insert_faces_batch(records, group_id)
             
             DatabaseManager.mark_images_processed_batch(processed_image_ids)
-            # et_image_bt_db_update = time.time()
-            # logger.info(f"⏰ Total time for update 1 batch of iamge in db {st_image_bt_db_update-et_image_bt_db_update}s")
+            et_image_bt_db_update = time.time()
+            logger.info(f"⏰ Total time for update 1 batch of iamge in db {et_image_bt_db_update-st_image_bt_db_update}s")
             processed_count += len(unprocessed)
             logger.info(f"Group {group_id}: Processed {processed_count} images so far, {len(records)} faces indexed")
             
@@ -733,12 +733,12 @@ def main():
                     
                     # et_group_fetch = time.time()
                     # logger.info(f"⏰ Total time for fetching groups {st_group_fetch-et_group_fetch}s")
-                    # st_group_process = time.time()
+                    st_group_process = time.time()
                     
                     process_group(group_id, indexer, yolo_model)
                     
-                    # et_group_process = time.time()
-                    # logger.info(f"⏰ Total time for process group {st_group_process-et_group_process}s")
+                    et_group_process = time.time()
+                    logger.info(f"⏰ Total time for proces complete group {et_group_process-st_group_process}s")
                     # st_group_db_update = time.time()
                     
                     DatabaseManager.mark_group_processed(group_id)

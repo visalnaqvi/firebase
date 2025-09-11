@@ -516,7 +516,7 @@ async function performBatchInsert(client, successfulResults) {
             compressed_location = EXCLUDED.compressed_location,
             artist = EXCLUDED.artist,
             date_taken = EXCLUDED.date_taken,
-            last_processed_at = NOW(),
+            last_processed_at = (NOW() AT TIME ZONE 'utc'),
             location = EXCLUDED.location,
             signed_url = EXCLUDED.signed_url,
             signed_url_3k = EXCLUDED.signed_url_3k,
@@ -563,7 +563,7 @@ async function performChunkedInserts(client, successfulResults) {
                     const insertResult = await client.query(
                         `INSERT INTO images
                          (id, group_id, created_by_user, filename, uploaded_at, status, json_meta_data, thumb_byte, image_byte, compressed_location, artist, date_taken, location, signed_url, signed_url_3k, signed_url_stripped , last_processed_at)
-                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15 , $16 ,NOW())
+                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15 , $16 ,(NOW() AT TIME ZONE 'utc'))
                          ON CONFLICT (id) DO UPDATE SET
                             status = EXCLUDED.status,
                             json_meta_data = EXCLUDED.json_meta_data,
@@ -572,7 +572,7 @@ async function performChunkedInserts(client, successfulResults) {
                             compressed_location = EXCLUDED.compressed_location,
                             artist = EXCLUDED.artist,
                             date_taken = EXCLUDED.date_taken,
-                            last_processed_at = NOW(),
+                            last_processed_at = (NOW() AT TIME ZONE 'utc'),
                             location = EXCLUDED.location,
                             signed_url = EXCLUDED.signed_url,
                             signed_url_3k = EXCLUDED.signed_url_3k,
@@ -680,7 +680,7 @@ async function insertIntoDatabaseBatch(client, results) {
                     const insertResult = await client.query(
                         `INSERT INTO images
                          (id, group_id, created_by_user, filename, uploaded_at, status, json_meta_data, thumb_byte, image_byte, compressed_location, artist, date_taken, location, signed_url, signed_url_3k , signed_url_stripped , last_processed_at)
-                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15 , $16 , NOW())
+                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15 , $16 , (NOW() AT TIME ZONE 'utc'))
                          ON CONFLICT (id) DO UPDATE SET
                             status = EXCLUDED.status,
                             json_meta_data = EXCLUDED.json_meta_data,
@@ -689,7 +689,7 @@ async function insertIntoDatabaseBatch(client, results) {
                             compressed_location = EXCLUDED.compressed_location,
                             artist = EXCLUDED.artist,
                             date_taken = EXCLUDED.date_taken,
-                            last_processed_at = NOW(),
+                            last_processed_at = (NOW() AT TIME ZONE 'utc'),
                             location = EXCLUDED.location,
                             signed_url = EXCLUDED.signed_url,
                             signed_url_3k = EXCLUDED.signed_url_3k,

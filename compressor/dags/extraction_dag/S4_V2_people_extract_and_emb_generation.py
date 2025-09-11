@@ -550,12 +550,12 @@ class OptimizedFaceIndexer:
             logger.error(f"Failed to convert image to bytes: {e}")
             raise
 
-    def read_image(self, path: str):
+    def read_image(self,group_id, path: str):
         """Read image from /warm-images cache, fallback to Firebase"""
         try:
             # Local path
             script_dir = os.path.dirname(os.path.abspath(__file__))
-            local_path = os.path.join(script_dir, "warm-images", f"compressed_{path}.jpg")
+            local_path = os.path.join(script_dir, "warm-images", f"{group_id}" , f"compressed_{path}.jpg")
 
             if os.path.exists(local_path):
                 # ✅ Read from local cache
@@ -577,9 +577,9 @@ class OptimizedFaceIndexer:
             logger.error(f"Failed to read image {path}: {e}")
             return None
         
-    def delete_local_image(self, path: str):
+    def delete_local_image(self,group_id, path: str):
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        local_path = os.path.join(script_dir, "warm-images", f"compressed_{path}.jpg")
+        local_path = os.path.join(script_dir, "warm-images", f"{group_id}" ,  f"compressed_{path}.jpg")
         try:
             if os.path.exists(local_path):
                 os.remove(local_path)
@@ -614,11 +614,11 @@ class OptimizedFaceIndexer:
         
         return unique_faces
 
-    def process_single_image(self, image_id: int, location: str, yolo_model) -> List[dict]:
+    def process_single_image(self, group_id ,image_id: int, location: str, yolo_model) -> List[dict]:
         """Optimized single image processing"""
         try:
             # Load image
-            img = self.read_image(image_id)
+            img = self.read_image(group_id,image_id)
             if img is None:
                 return []
 
@@ -651,7 +651,7 @@ class OptimizedFaceIndexer:
                 record = self._process_single_face(face, face_bbox, person_boxes, img, image_id)
                 if record:
                     records.append(record)
-            self.delete_local_image(image_id)
+            # self.delete_local_image(group_id,image_id)
             return records
             
         except Exception as e:
@@ -790,7 +790,7 @@ class OptimizedFaceIndexer:
                 except Exception as e:
                     logger.error(f"Parallel upsert task failed: {e}")
 
-    def process_images_batch(self, images_batch: List[Tuple[int, str]], yolo_model) -> List[dict]:
+    def process_images_batch(self,group_id, images_batch: List[Tuple[int, str]], yolo_model) -> List[dict]:
         """Process batch of images with optimized parallelism"""
         logger.info(f"Processing batch of {len(images_batch)} images")
         
@@ -798,7 +798,7 @@ class OptimizedFaceIndexer:
         
         with concurrent.futures.ThreadPoolExecutor(max_workers=config.PARALLEL_LIMIT) as executor:
             futures = {
-                executor.submit(self.process_single_image, img_id, location, yolo_model): img_id
+                executor.submit(self.process_single_image,group_id, img_id, location, yolo_model): img_id
                 for img_id, location in images_batch
             }
             
@@ -836,7 +836,7 @@ def process_group_optimized(group_id: int, indexer: OptimizedFaceIndexer, yolo_m
             
             # Step 1: Process all images in the batch (extract embeddings)
             logger.info("Step 1: Processing images and extracting embeddings...")
-            all_records = indexer.process_images_batch(unprocessed, yolo_model)
+            all_records = indexer.process_images_batch(group_id, unprocessed, yolo_model)
             
             processing_time = time.time() - start_time
             logger.info(f"Processing completed in {processing_time:.2f}s")

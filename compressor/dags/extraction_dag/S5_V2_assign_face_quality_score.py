@@ -153,7 +153,8 @@ class FaceQualityProcessor:
 
     def __init__(self, group_id: int):
         self.group_id = group_id
-        self.group_folder = os.path.join("warm-image", str(group_id), "faces")
+        self.script_dir = os.path.dirname(os.path.abspath(__file__))
+        self.group_folder = os.path.join(self.script_dir,"warm-images", str(group_id), "faces")
         self.json_path = os.path.join(self.group_folder, "faces.json")
 
     def load_faces(self):

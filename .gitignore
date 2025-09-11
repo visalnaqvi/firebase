@@ -12,3 +12,6 @@ compressor/compressed_img
 compressor/face_marked
 compressor/faces_cropped
 compressor/dags/extraction_dag/warm-images
+compressor/dags/cleanup_dag/firebase-key.json
+compressor/dags/V2_dag/warm-images
+compressor/dags/V2_dag/firebase-key.json

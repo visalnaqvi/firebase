@@ -183,10 +183,10 @@ class ConnectionValidator:
         """Validate all connections"""
         logger.info("Validating connections...")
         db_ok = ConnectionValidator.validate_database()
-        qdrant_ok = ConnectionValidator.validate_qdrant()
+        # qdrant_ok = ConnectionValidator.validate_qdrant()
         firebase_ok = ConnectionValidator.validate_firebase()
         
-        if db_ok and qdrant_ok and firebase_ok:
+        if db_ok and firebase_ok:
             logger.info("✓ All connections validated successfully")
             return True
         else:
@@ -401,10 +401,12 @@ class DatabaseManager:
                         """
                         UPDATE process_status
                         SET next_group_in_queue = %s
-                        WHERE task = 'quality_assignment'
+                        WHERE task = 'quality_assignment' and next_group_in_queue is null  
                         """,
                         (group_id,)
                     )
+                    if cur.rowcount == 0:
+                        raise Exception("No rows updated for quality_assignment (next_group_in_queue was not NULL)")
                 conn.commit()
                 return {"success": True}
         except Exception as e:
@@ -624,7 +626,7 @@ class OptimizedFaceIndexer:
         self._initialize_models()
         
         # Create connection pool for Qdrant
-        self.qdrant = QdrantClient(host=config.QDRANT_HOST, port=config.QDRANT_PORT)
+        # self.qdrant = QdrantClient(host=config.QDRANT_HOST, port=config.QDRANT_PORT)
         
         # Cache for Firebase bucket
         self.firebase_bucket = storage.bucket()
@@ -1030,7 +1032,7 @@ class OptimizedFaceIndexer:
 def process_group_optimized(group_id: int, indexer: OptimizedFaceIndexer, yolo_model , run_id) -> None:
     """Optimized group processing with batched operations and JSON check"""
     try:
-        indexer.setup_collection(str(group_id))
+        # indexer.setup_collection(str(group_id))
         logger.info(f"Processing group {group_id}")
         
         # Load already processed image IDs from JSON once at the beginning
@@ -1044,7 +1046,7 @@ def process_group_optimized(group_id: int, indexer: OptimizedFaceIndexer, yolo_m
         while True:
             # Fetch batch of images
             fetchUnprocessedResponse = DatabaseManager.fetch_unprocessed_images(group_id, config.BATCH_SIZE)
-            if(not fetchUnprocessedResponse.success):
+            if(not fetchUnprocessedResponse["success"]):
                 raise ProcessingError(
                     f"Failed to fetch unprocessed images: {fetchUnprocessedResponse['error']}", 
                     group_id=group_id, 
@@ -1052,7 +1054,7 @@ def process_group_optimized(group_id: int, indexer: OptimizedFaceIndexer, yolo_m
                     retryable=False
                 )            
                 
-            unprocessed = fetchUnprocessedResponse.data
+            unprocessed = fetchUnprocessedResponse["data"]
             if not unprocessed:
                 logger.info(f"No more unprocessed images for group {group_id}")
                 DatabaseManager.update_status_history(run_id , "extraction" , "group" , processed_count , len(all_failed_images) , len(all_success_images) , group_id , "error Failed for "+", \n".join(all_failed_images))
@@ -1114,15 +1116,15 @@ def process_group_optimized(group_id: int, indexer: OptimizedFaceIndexer, yolo_m
                 # Step 3: Batch insert to Qdrant
                 logger.info("Step 3: Inserting to Qdrant...")
                 qdrant_start = time.time()
-                try:
-                    indexer.batch_upsert_to_qdrant(all_records, str(group_id))
-                except Exception as e:
-                    raise ProcessingError(
-                        f"Qdrant insertion failed: {str(e)}", 
-                        group_id=group_id, 
-                        reason="qdrant_error", 
-                        retryable=True
-                    )
+                # try:
+                #     indexer.batch_upsert_to_qdrant(all_records, str(group_id))
+                # except Exception as e:
+                #     raise ProcessingError(
+                #         f"Qdrant insertion failed: {str(e)}", 
+                #         group_id=group_id, 
+                #         reason="qdrant_error", 
+                #         retryable=True
+                #     )
                 qdrant_time = time.time() - qdrant_start
                 logger.info(f"Qdrant insert completed in {qdrant_time:.2f}s")
                 

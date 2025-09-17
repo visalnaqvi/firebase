@@ -29,42 +29,42 @@ def get_or_assign_group_id():
     """
     conn = None
     try:
-        conn = get_db_connection()
-        with conn.cursor() as cur:
-            # Fetch both columns
-            cur.execute(
-                """
-                SELECT processing_group, next_group_in_queue
-                FROM process_status
-                WHERE task = 'thumbnail'
-                LIMIT 1
-                """
-            )
-            row = cur.fetchone()
-
-            if not row:
-                return None
-
-            processing_group, next_group_in_queue = row
-
-            if processing_group:
-                return processing_group
-
-            if next_group_in_queue:
-                # Promote next_group_in_queue → processing_group
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                # Fetch both columns
                 cur.execute(
                     """
-                    UPDATE process_status
-                    SET processing_group = %s,
-                        next_group_in_queue = NULL
+                    SELECT processing_group, next_group_in_queue
+                    FROM process_status
                     WHERE task = 'thumbnail'
-                    """,
-                    (next_group_in_queue,)
+                    LIMIT 1
+                    """
                 )
-                conn.commit()
-                return next_group_in_queue
+                row = cur.fetchone()
 
-            return None
+                if not row:
+                    return None
+
+                processing_group, next_group_in_queue = row
+
+                if processing_group:
+                    return processing_group
+
+                if next_group_in_queue:
+                    # Promote next_group_in_queue → processing_group
+                    cur.execute(
+                        """
+                        UPDATE process_status
+                        SET processing_group = %s,
+                            next_group_in_queue = NULL
+                        WHERE task = 'thumbnail'
+                        """,
+                        (next_group_in_queue,)
+                    )
+                    conn.commit()
+                    return next_group_in_queue
+
+                return None
     except Exception as e:
         print("❌ Error in get_or_assign_group_id:", e)
         return None
@@ -127,22 +127,35 @@ def update_status(group_id, fail_reason, is_ideal , status):
 
     
     try:
-        conn = get_db_connection()
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                UPDATE process_status
-                SET task_status = %s,
-                    processing_group = %s,
-                    fail_reason = %s,
-                    ended_at = NOW(),
-                    is_ideal = %s
-                WHERE task = 'thumbnail'
-                """,
-                (status , group_id, fail_reason, is_ideal)
-            )
-        conn.commit()
-        return {"success": True}
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                if (status=='failed'):
+                    cur.execute(
+                        """
+                        UPDATE process_status
+                        SET task_status = %s,
+                            fail_reason = %s,
+                            ended_at = NOW(),
+                            is_ideal = %s
+                        WHERE task = 'thumbnail'
+                        """,
+                        (status , fail_reason, is_ideal)
+                    )
+                else:
+                    cur.execute(
+                        """
+                        UPDATE process_status
+                        SET task_status = %s,
+                            processing_group = %s,
+                            fail_reason = %s,
+                            ended_at = NOW(),
+                            is_ideal = %s
+                        WHERE task = 'thumbnail'
+                        """,
+                        (status , group_id, fail_reason, is_ideal)
+                    )
+            conn.commit()
+            return {"success": True}
     except Exception as e:
         print("❌ Error updating process status:", e)
         if conn:
@@ -160,26 +173,28 @@ def update_last_provrssed_group_column(group_id):
         conn = None
         
         try:
-            conn = get_db_connection()
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    UPDATE process_status
-                    SET last_group_processed = %s
-                    WHERE task = 'thumbnail'
-                    """,
-                    (group_id,)
-                )
-                cur.execute(
-                    """
-                    UPDATE process_status
-                    SET next_group_in_queue = %s
-                    WHERE task = 'centroid_generation'
-                    """,
-                    (group_id,)
-                )
-            conn.commit()
-            return {"success": True}
+            with get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE process_status
+                        SET last_group_processed = %s
+                        WHERE task = 'thumbnail'
+                        """,
+                        (group_id,)
+                    )
+                    cur.execute(
+                        """
+                        UPDATE process_status
+                        SET next_group_in_queue = %s
+                        WHERE task = 'centroid_generation' and next_group_in_queue is null 
+                        """,
+                        (group_id,)
+                    )
+                    if cur.rowcount == 0:
+                        raise Exception("No rows updated for quality_assignment (next_group_in_queue was not NULL)")
+                conn.commit()
+                return {"success": True}
         except Exception as e:
             print("❌ Error updating process status:", e)
             if conn:

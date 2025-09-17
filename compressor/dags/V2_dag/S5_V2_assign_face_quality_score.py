@@ -9,6 +9,16 @@ import time
 from typing import List, Tuple, Optional
 from psycopg2.extras import DictCursor
 import argparse
+class ProcessingError(Exception):
+    def __init__(self, message, group_id=None, reason=None, retryable=True):
+        super().__init__(message)
+        self.group_id = group_id
+        self.reason = reason
+        self.retryable = retryable
+
+    def __str__(self):
+        return f"ProcessingError: {self.args[0]} (group_id={self.group_id}, reason={self.reason}, retryable={self.retryable})"
+# Initialize Firebase once
 # -------------------- Logging --------------------
 logging.basicConfig(
     level=logging.INFO,
@@ -16,6 +26,176 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+def get_or_assign_group_id():
+    """
+    Fetch the active group_id for extraction task.
+    - If processing_group has a value → return it
+    - Else if next_group_in_queue has a value → move it to processing_group,
+    set next_group_in_queue = NULL, return it
+    - Else return None
+    """
+    conn = None
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            # Fetch both columns
+            cur.execute(
+                """
+                SELECT processing_group, next_group_in_queue
+                FROM process_status
+                WHERE task = 'quality_assignment'
+                LIMIT 1
+                """
+            )
+            row = cur.fetchone()
+
+            if not row:
+                return None
+
+            processing_group, next_group_in_queue = row
+
+            if processing_group:
+                return processing_group
+
+            if next_group_in_queue:
+                # Promote next_group_in_queue → processing_group
+                cur.execute(
+                    """
+                    UPDATE process_status
+                    SET processing_group = %s,
+                        next_group_in_queue = NULL
+                    WHERE task = 'quality_assignment'
+                    """,
+                    (next_group_in_queue,)
+                )
+                conn.commit()
+                return next_group_in_queue
+
+            return None
+    except Exception as e:
+        print("❌ Error in get_or_assign_group_id:", e)
+        return None
+
+
+def update_status_history(
+    run_id: int,
+    task: str,
+    sub_task: str,
+    totalImagesInitialized: int,
+    totalImagesFailed: int,
+    totalImagesProcessed: int,
+    groupId: Optional[str],
+    fail_reason: Optional[str]
+) -> bool:
+    """
+    Insert a record into process_history.
+    Returns True if insert succeeded, False otherwise.
+    """
+
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO process_history
+                        (worker_id, run_id, task, sub_task,
+                        initialized_count, success_count, failed_count,
+                        group_id, ended_at, fail_reason)
+                    VALUES
+                        (%s, %s, %s, %s,
+                        %s, %s, %s,
+                        %s, NOW(), %s)
+                    """,
+                    (
+                        1,                       # worker_id
+                        run_id,
+                        task,
+                        sub_task,
+                        totalImagesInitialized,
+                        totalImagesProcessed,
+                        totalImagesFailed,
+                        groupId,
+                        fail_reason,
+                    )
+                )
+                conn.commit()
+                return True
+    except Exception as e:
+        print(f"❌ Error inserting into process_history: {e}")
+        return False
+    
+    
+def update_status(group_id, fail_reason, is_ideal , status):
+    """
+    Updates process_status table where task = 'extraction'
+    Returns a dict with success flag and optional error.
+    """
+    conn = None
+
+    
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE process_status
+                SET task_status = %s,
+                    processing_group = %s,
+                    fail_reason = %s,
+                    ended_at = NOW(),
+                    is_ideal = %s
+                WHERE task = 'quality_assignment'
+                """,
+                (status , group_id, fail_reason, is_ideal)
+            )
+        conn.commit()
+        return {"success": True}
+    except Exception as e:
+        print("❌ Error updating process status:", e)
+        if conn:
+            conn.rollback()
+        return {"success": False, "errorReason": "updating status", "error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+            
+def update_last_provrssed_group_column(group_id):
+        """
+        Updates process_status table where task = 'extraction'
+        Returns a dict with success flag and optional error.
+        """
+        conn = None
+        
+        try:
+            conn = get_db_connection()
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE process_status
+                    SET last_group_processed = %s
+                    WHERE task = 'quality_assignment'
+                    """,
+                    (group_id,)
+                )
+                cur.execute(
+                    """
+                    UPDATE process_status
+                    SET next_group_in_queue = %s
+                    WHERE task = 'grouping'
+                    """,
+                    (group_id,)
+                )
+            conn.commit()
+            return {"success": True}
+        except Exception as e:
+            print("❌ Error updating process status:", e)
+            if conn:
+                conn.rollback()
+            return {"success": False, "errorReason": "updating status", "error": str(e)}
+        finally:
+            if conn:
+                conn.close()
 # -------------------- DB Connection --------------------
 def get_db_connection():
     return psycopg2.connect(
@@ -25,36 +205,7 @@ def get_db_connection():
         user="postgres",
         password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
     )
-    
-def check_group_exists(group_id: int) -> bool:
-    """Check if group exists and has warm status"""
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT id FROM groups WHERE id = %s AND status = 'warming' and last_processed_step='extraction'", (group_id,))
-            result = cur.fetchone()
-            return result is not None
-def mark_group_process_status(group_id, status) -> None:
-    """Mark group_id as being processed"""
-    if not group_id:
-        raise ValueError("group_id is required")
 
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                query = """
-                    UPDATE process_status
-                    SET group_id = %s,
-                        running = 'quality_score',
-                        status = %s,
-                        started_at = NOW()
-                    WHERE id = 1
-                """
-                cur.execute(query, (group_id, status))
-                conn.commit()
-    except Exception as e:
-        logger.error(f"Failed to update process_status for group {group_id}: {e}")
-        # fail fast → stop process
-        raise
 # -------------------- Image Quality Utils --------------------
 def _normalize(value, min_val, max_val):
     if max_val <= min_val:
@@ -189,13 +340,15 @@ class FaceQualityProcessor:
     def load_faces(self):
         try:
             if not os.path.exists(self.json_path):
-                raise FileNotFoundError(f"No faces.json found for group {self.group_id}")
+                raise ProcessingError(f"No faces.json found for group {self.group_id}")
             with open(self.json_path, "r", encoding="utf-8") as f:
                 return json.load(f)
+        except ProcessingError as e:
+            logger.error(f"Failed to load faces.json for group {self.group_id}: {e}")
+            raise 
         except Exception as e:
             logger.error(f"Failed to load faces.json for group {self.group_id}: {e}")
-            mark_group_process_status(self.group_id, 'failed')
-            raise  # re-raise to stop processing
+            raise  ProcessingError(e)
 
     def save_faces(self, faces):
         try:
@@ -203,11 +356,11 @@ class FaceQualityProcessor:
                 json.dump(faces, f, indent=2)
         except Exception as e:
             logger.error(f"Failed to save faces.json for group {self.group_id}: {e}")
-            mark_group_process_status(self.group_id, 'failed')
             raise
 
     def process_faces_batch(self, faces_batch: List[dict]) -> List[Tuple[str, float]]:
         results = []
+        failedResults = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.PARALLEL_WORKERS) as executor:
             future_to_face = {
                 executor.submit(
@@ -222,10 +375,9 @@ class FaceQualityProcessor:
                     score = future.result(timeout=30)
                     results.append((face["id"], score))
                 except Exception as e:
-                    logger.error(f"Error processing face {face['id']}: {e}")
-                    # mark as error-quality-score
-                    # results.append((face["id"], "error_quality_score"))
-        return results
+                    logger.error(f"Error while assign quality: {e}")
+                    failedResults.append((face["id"], None))
+        return results , failedResults
 
     def run(self):
         try:
@@ -235,39 +387,42 @@ class FaceQualityProcessor:
             logger.info(f"Group {self.group_id}: {len(unprocessed)} unprocessed faces")
 
             processed_count = 0
+            success_count = 0
+            failed_count = 0
             for i in range(0, len(unprocessed), self.BATCH_SIZE):
                 batch = unprocessed[i:i+self.BATCH_SIZE]
-                face_scores = self.process_faces_batch(batch)
+                face_scores , failed_results = self.process_faces_batch(batch)
                 for fid, score in face_scores:
                     for f in faces:
                         if f["id"] == fid:
                             f["quality_score"] = score
                             break
                 processed_count += len(batch)
+                success_count += len(face_scores)
+                failed_count += len(failed_results)
                 logger.info(f"Group {self.group_id}: processed {processed_count}/{len(unprocessed)}")
 
             self.save_faces(faces)
             logger.info(f"Group {self.group_id}: faces.json updated")
-
+            return processed_count , failed_count , success_count
         except Exception as e:
             logger.error(f"Group {self.group_id} failed due to critical error: {e}")
-            mark_group_process_status(self.group_id , 'failed')
             raise
             
 # -------------------- Main --------------------
 def main():
-    parser = argparse.ArgumentParser(description="Process face quality for a specific group.")
-    parser.add_argument("group_id", type=int, help="Group ID to process")
-    args = parser.parse_args()
-    group_id = args.group_id
-    mark_group_process_status(group_id , 'healthy')
-    processor = FaceQualityProcessor(group_id)
-    processor.run()
-    if not check_group_exists(group_id):
-            logger.error(f"Group {group_id} not found")
-            raise
     # Update group status in DB
-    try:
+    try:            
+        run_id  = int(time.time())
+        group_id = get_or_assign_group_id()
+        if not group_id:
+            update_status(None , "No Group Found To Process" , True , "waiting")
+            update_status_history(run_id , "assign_quality_score" , "run" , processed_count , failed_count , success_count , group_id , "no_group")
+            return False
+        update_status(group_id , "Running" , False , "healthy")
+        update_status_history(run_id , "assign_quality_score" , "run" , processed_count , failed_count , success_count , group_id , "started")
+        processor = FaceQualityProcessor(group_id)
+        processed_count , failed_count , success_count = processor.run()
         with get_db_connection() as conn, conn.cursor() as cur:
             cur.execute("""
                 UPDATE groups 
@@ -275,12 +430,19 @@ def main():
                 WHERE id = %s
             """, (group_id,))
             conn.commit()
-            mark_group_process_status(group_id , 'success')
             logger.info(f"Group {group_id}: last_processed_step updated to 'assign_quality_score'")
+        update_status(None , "Waiting" , True , "done")
+        update_status_history(run_id , "assign_quality_score" , "run" , processed_count , failed_count , success_count , group_id , "done")
+        update_last_provrssed_group_column(group_id)
+
+        return True
     except Exception as e:
         logger.error(f"Failed to update DB for group {group_id}: {e}")
-        mark_group_process_status(group_id , 'failed')
+        update_status(group_id , f"Error while processing group : {e}" , True , "failed")
+        update_status_history(run_id , "assign_quality_score" , "run" , None ,None , None , group_id , f"error while processing group : {e}")
+        return False
 
 
 if __name__ == "__main__":
-    main()
+    success = main()
+    exit(0 if success else 1)

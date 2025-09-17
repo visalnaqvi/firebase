@@ -28,7 +28,15 @@ from collections import defaultdict
 import json
 import argparse
 import sys
+class ProcessingError(Exception):
+    def __init__(self, message, group_id=None, reason=None, retryable=True):
+        super().__init__(message)
+        self.group_id = group_id
+        self.reason = reason
+        self.retryable = retryable
 
+    def __str__(self):
+        return f"ProcessingError: {self.args[0]} (group_id={self.group_id}, reason={self.reason}, retryable={self.retryable})"
 # Initialize Firebase once
 try:
     cred = credentials.Certificate("firebase-key.json")
@@ -211,24 +219,202 @@ class DatabaseManager:
     """Handles all database operations with improved batching"""
     
     @staticmethod
-    def fetch_unprocessed_images(group_id: int, batch_size: int) -> List[Tuple[int, str]]:
+    def fetch_unprocessed_images(group_id: int, batch_size: int):
         """Fetch unprocessed images with proper error handling"""
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT id, location FROM images WHERE status = 'warm' AND group_id = %s LIMIT %s", 
-                    (group_id, batch_size)
-                )
-                return cur.fetchall()
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT id, location FROM images WHERE status = 'warm' AND group_id = %s LIMIT %s", 
+                        (group_id, batch_size)
+                    )
+                    return {"success": True, "data": cur.fetchall()}
+        except Exception as e:
+            logger.error(f"❌ Error in fetch_unprocessed_images: {e}")
+            return {"success": False, "error": str(e)}
+    @staticmethod
+    def get_or_assign_group_id():
+        """
+        Fetch the active group_id for extraction task.
+        - If processing_group has a value → return it
+        - Else if next_group_in_queue has a value → move it to processing_group,
+        set next_group_in_queue = NULL, return it
+        - Else return None
+        """
+        conn = None
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    # Fetch both columns
+                    cur.execute(
+                        """
+                        SELECT processing_group, next_group_in_queue
+                        FROM process_status
+                        WHERE task = 'extraction'
+                        LIMIT 1
+                        """
+                    )
+                    row = cur.fetchone()
+
+                    if not row:
+                        return None
+
+                    processing_group, next_group_in_queue = row
+
+                    if processing_group:
+                        return processing_group
+
+                    if next_group_in_queue:
+                        # Promote next_group_in_queue → processing_group
+                        cur.execute(
+                            """
+                            UPDATE process_status
+                            SET processing_group = %s,
+                                next_group_in_queue = NULL
+                            WHERE task = 'extraction'
+                            """,
+                            (next_group_in_queue,)
+                        )
+                        conn.commit()
+                        return next_group_in_queue
+
+                    return None
+        except Exception as e:
+            print("❌ Error in get_or_assign_group_id:", e)
+            return None
 
     @staticmethod
-    def check_group_exists(group_id: int) -> bool:
-        """Check if group exists and has warm status"""
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT id FROM groups WHERE id = %s AND status = 'warm'", (group_id,))
-                result = cur.fetchone()
-                return result is not None
+    def update_status_history(
+        run_id: int,
+        task: str,
+        sub_task: str,
+        totalImagesInitialized: int,
+        totalImagesFailed: int,
+        totalImagesProcessed: int,
+        groupId: Optional[str],
+        fail_reason: Optional[str]
+    ) -> bool:
+        """
+        Insert a record into process_history.
+        Returns True if insert succeeded, False otherwise.
+        """
+
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO process_history
+                            (worker_id, run_id, task, sub_task,
+                            initialized_count, success_count, failed_count,
+                            group_id, ended_at, fail_reason)
+                        VALUES
+                            (%s, %s, %s, %s,
+                            %s, %s, %s,
+                            %s, NOW(), %s)
+                        """,
+                        (
+                            1,                       # worker_id
+                            run_id,
+                            task,
+                            sub_task,
+                            totalImagesInitialized,
+                            totalImagesProcessed,
+                            totalImagesFailed,
+                            groupId,
+                            fail_reason,
+                        )
+                    )
+                    conn.commit()
+                    return True
+        except Exception as e:
+            print(f"❌ Error inserting into process_history: {e}")
+            return False
+        
+        
+    def update_status(group_id, fail_reason, is_ideal , status):
+        """
+        Updates process_status table where task = 'extraction'
+        Returns a dict with success flag and optional error.
+        """
+     
+            
+        
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    if (status=='failed'):
+                        cur.execute(
+                            """
+                            UPDATE process_status
+                            SET task_status = %s,
+                                fail_reason = %s,
+                                ended_at = NOW(),
+                                is_ideal = %s
+                            WHERE task = 'extraction'
+                            """,
+                            (status , fail_reason, is_ideal)
+                        )
+                    else:
+                        cur.execute(
+                            """
+                            UPDATE process_status
+                            SET task_status = %s,
+                                processing_group = %s,
+                                fail_reason = %s,
+                                ended_at = NOW(),
+                                is_ideal = %s
+                            WHERE task = 'extraction'
+                            """,
+                            (status , group_id, fail_reason, is_ideal)
+                        )
+                conn.commit()
+                return {"success": True}
+        except Exception as e:
+            print("❌ Error updating process status:", e)
+            if conn:
+                conn.rollback()
+            return {"success": False, "errorReason": "updating status", "error": str(e)}
+        finally:
+            if conn:
+                conn.close()
+
+    def update_last_provrssed_group_column(group_id):
+        """
+        Updates process_status table where task = 'extraction'
+        Returns a dict with success flag and optional error.
+        """
+        conn = None
+        
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE process_status
+                        SET last_group_processed = %s
+                        WHERE task = 'extraction'
+                        """,
+                        (group_id,)
+                    )
+                    cur.execute(
+                        """
+                        UPDATE process_status
+                        SET next_group_in_queue = %s
+                        WHERE task = 'quality_assignment'
+                        """,
+                        (group_id,)
+                    )
+                conn.commit()
+                return {"success": True}
+        except Exception as e:
+            print("❌ Error updating process status:", e)
+            if conn:
+                conn.rollback()
+            return {"success": False, "errorReason": "updating status", "error": str(e)}
+        finally:
+            if conn:
+                conn.close()
 
     @staticmethod
     def load_processed_images_from_json(group_id: int) -> Set[str]:
@@ -307,25 +493,6 @@ class DatabaseManager:
                 cur.execute(query, (group_id,))
                 conn.commit()
                 logger.info(f"Marked group {group_id} as processed")
-
-    @staticmethod
-    def mark_group_process_status(group_id , status) -> None:
-        """Mark group_id as being processed"""
-        if not group_id:
-            return
-            
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                query = """
-                    UPDATE process_status
-                    SET group_id = %s,
-                    running = 'extraction',
-                    status = %s,
-                    started_at = NOW()
-                    WHERE id = 1
-                """
-                cur.execute(query, (group_id,status))
-                conn.commit()
     
     @staticmethod
     def mark_image_status(image_id: int, status: str, error_message: str = None) -> None:
@@ -354,35 +521,38 @@ class DatabaseManager:
         """Mark multiple images with their respective statuses and error messages"""
         if not image_statuses:
             return
-        
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                # Separate images with and without error messages
-                with_errors = [(img_id, status, error_msg) for img_id, status, error_msg in image_statuses if error_msg]
-                without_errors = [(img_id, status) for img_id, status, error_msg in image_statuses if not error_msg]
-                
-                # Update images with error messages
-                if with_errors:
-                    query_with_error = """
-                        UPDATE images 
-                        SET status = data.status, error_message = data.error_message, last_processed_at = NOW()
-                        FROM (VALUES %s) AS data(id, status, error_message)
-                        WHERE images.id = data.id::uuid
-                    """
-                    execute_values(cur, query_with_error, with_errors)
-                
-                # Update images without error messages
-                if without_errors:
-                    query_without_error = """
-                        UPDATE images 
-                        SET status = data.status, last_processed_at = NOW()
-                        FROM (VALUES %s) AS data(id, status)
-                        WHERE images.id = data.id::uuid
-                    """
-                    execute_values(cur, query_without_error, without_errors)
-                
-                conn.commit()
-                logger.info(f"Updated status for {len(image_statuses)} images")
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    # Separate images with and without error messages
+                    with_errors = [(img_id, status, error_msg) for img_id, status, error_msg in image_statuses if error_msg]
+                    without_errors = [(img_id, status) for img_id, status, error_msg in image_statuses if not error_msg]
+                    
+                    # Update images with error messages
+                    if with_errors:
+                        query_with_error = """
+                            UPDATE images 
+                            SET status = data.status, error_message = data.error_message, last_processed_at = NOW()
+                            FROM (VALUES %s) AS data(id, status, error_message)
+                            WHERE images.id = data.id::uuid
+                        """
+                        execute_values(cur, query_with_error, with_errors)
+                    
+                    # Update images without error messages
+                    if without_errors:
+                        query_without_error = """
+                            UPDATE images 
+                            SET status = data.status, last_processed_at = NOW()
+                            FROM (VALUES %s) AS data(id, status)
+                            WHERE images.id = data.id::uuid
+                        """
+                        execute_values(cur, query_without_error, without_errors)
+                    
+                    conn.commit()
+                    logger.info(f"Updated status for {len(image_statuses)} images")
+        except Exception as e:
+            logger.error(f"Database error in mark_images_status_batch: {e}")
+            raise ProcessingError(f"Cannot update images status in db: {str(e)}", retryable=False)
 
     @staticmethod
     def save_face_image(face_record: dict, group_id: int):
@@ -563,7 +733,7 @@ class OptimizedFaceIndexer:
                 else:
                     logger.warning(f"Corrupted local file {local_path}, refetching from Firebase")
 
-            # ❌ Not in local cache (or corrupted), fetch from Firebase
+            # [WARNING] Not in local cache (or corrupted), fetch from Firebase
             blob = self.firebase_bucket.blob("compressed_" + path)
             if not blob.exists():
                 raise FileNotFoundError(f"Image not found in Firebase: compressed_{path}")
@@ -805,6 +975,7 @@ class OptimizedFaceIndexer:
                         self.qdrant.upsert(collection_name=collection_name, points=[point])
                     except Exception as inner_e:
                         logger.error(f"Failed to upsert single point: {inner_e}")
+                        raise
 
         # Split records into batches
         batches = [records[i:i+batch_size] for i in range(0, len(records), batch_size)]
@@ -827,13 +998,12 @@ class OptimizedFaceIndexer:
         
         all_records = []
         image_statuses = []
-        
         with concurrent.futures.ThreadPoolExecutor(max_workers=config.PARALLEL_LIMIT) as executor:
             futures = {
                 executor.submit(self.process_single_image, group_id, img_id, location, yolo_model): (img_id, location)
                 for img_id, location in images_batch
             }
-            
+           
             for future in concurrent.futures.as_completed(futures):
                 img_id, location = futures[future]
                 try:
@@ -857,7 +1027,7 @@ class OptimizedFaceIndexer:
         
         return all_records, image_statuses
 
-def process_group_optimized(group_id: int, indexer: OptimizedFaceIndexer, yolo_model) -> None:
+def process_group_optimized(group_id: int, indexer: OptimizedFaceIndexer, yolo_model , run_id) -> None:
     """Optimized group processing with batched operations and JSON check"""
     try:
         indexer.setup_collection(str(group_id))
@@ -869,13 +1039,23 @@ def process_group_optimized(group_id: int, indexer: OptimizedFaceIndexer, yolo_m
         processed_count = 0
         total_faces = 0
         skipped_count = 0
-        
+        all_success_images = []
+        all_failed_images = []
         while True:
             # Fetch batch of images
-            unprocessed = DatabaseManager.fetch_unprocessed_images(group_id, config.BATCH_SIZE)
-            
+            fetchUnprocessedResponse = DatabaseManager.fetch_unprocessed_images(group_id, config.BATCH_SIZE)
+            if(not fetchUnprocessedResponse.success):
+                raise ProcessingError(
+                    f"Failed to fetch unprocessed images: {fetchUnprocessedResponse['error']}", 
+                    group_id=group_id, 
+                    reason="database_fetch_error", 
+                    retryable=False
+                )            
+                
+            unprocessed = fetchUnprocessedResponse.data
             if not unprocessed:
                 logger.info(f"No more unprocessed images for group {group_id}")
+                DatabaseManager.update_status_history(run_id , "extraction" , "group" , processed_count , len(all_failed_images) , len(all_success_images) , group_id , "error Failed for "+", \n".join(all_failed_images))
                 break
             
             logger.info(f"Found {len(unprocessed)} unprocessed images for group {group_id}")
@@ -895,16 +1075,28 @@ def process_group_optimized(group_id: int, indexer: OptimizedFaceIndexer, yolo_m
             if not images_to_process:
                 if already_processed_statuses:
                     logger.info("All images in this batch were already processed, updating database status...")
-                    DatabaseManager.mark_images_status_batch(already_processed_statuses)
-                    processed_count += len(already_processed_statuses)
+                    try:
+                        DatabaseManager.mark_images_status_batch(already_processed_statuses)
+                        processed_count += len(already_processed_statuses)
+                    except ProcessingError:
+                        # Re-raise ProcessingError as-is
+                        raise
                 continue
             
             logger.info(f"Processing {len(images_to_process)} new images, skipping {len(already_processed_statuses)} already processed")
             
             # Step 1: Process only the unprocessed images (extract embeddings)
             logger.info("Step 1: Processing new images and extracting embeddings...")
-            all_records, image_statuses = indexer.process_images_batch(group_id, images_to_process, yolo_model)
-            
+            try:
+                all_records, image_statuses = indexer.process_images_batch(group_id, images_to_process, yolo_model)
+            except Exception as e:
+                # Convert any processing errors to ProcessingError
+                raise ProcessingError(
+                    f"Image batch processing failed: {str(e)}", 
+                    group_id=group_id, 
+                    reason="image_processing_error", 
+                    retryable=True
+                )
             # Combine statuses from already processed and newly processed images
             combined_statuses = already_processed_statuses + image_statuses
             
@@ -913,13 +1105,24 @@ def process_group_optimized(group_id: int, indexer: OptimizedFaceIndexer, yolo_m
             
             # Step 2: Update image statuses in batch
             logger.info("Step 2: Updating image statuses...")
-            DatabaseManager.mark_images_status_batch(combined_statuses)
-            
+            try:
+                DatabaseManager.mark_images_status_batch(combined_statuses)
+            except ProcessingError:
+                # Re-raise ProcessingError as-is
+                raise
             if all_records:
                 # Step 3: Batch insert to Qdrant
                 logger.info("Step 3: Inserting to Qdrant...")
                 qdrant_start = time.time()
-                indexer.batch_upsert_to_qdrant(all_records, str(group_id))
+                try:
+                    indexer.batch_upsert_to_qdrant(all_records, str(group_id))
+                except Exception as e:
+                    raise ProcessingError(
+                        f"Qdrant insertion failed: {str(e)}", 
+                        group_id=group_id, 
+                        reason="qdrant_error", 
+                        retryable=True
+                    )
                 qdrant_time = time.time() - qdrant_start
                 logger.info(f"Qdrant insert completed in {qdrant_time:.2f}s")
                 
@@ -927,13 +1130,22 @@ def process_group_optimized(group_id: int, indexer: OptimizedFaceIndexer, yolo_m
                 logger.info("Step 4: Inserting to database...")
                 db_start = time.time()
                 # Remove embeddings from records before DB insert (they're already in Qdrant)
-                db_records = []
-                for record in all_records:
-                    db_record = {k: v for k, v in record.items() 
-                               if k not in ['face_embedding', 'clothing_embedding']}
-                    db_records.append(db_record)
-                
-                DatabaseManager.insert_faces_batch(db_records, group_id)
+                try:
+                    # Remove embeddings from records before DB insert
+                    db_records = []
+                    for record in all_records:
+                        db_record = {k: v for k, v in record.items() 
+                                if k not in ['face_embedding', 'clothing_embedding']}
+                        db_records.append(db_record)
+                    
+                    DatabaseManager.insert_faces_batch(db_records, group_id)
+                except Exception as e:
+                    raise ProcessingError(
+                        f"Database face insertion failed: {str(e)}", 
+                        group_id=group_id, 
+                        reason="face_db_insertion_error", 
+                        retryable=False
+                    )
                 db_time = time.time() - db_start
                 logger.info(f"Database insert completed in {db_time:.2f}s")
                 
@@ -947,12 +1159,14 @@ def process_group_optimized(group_id: int, indexer: OptimizedFaceIndexer, yolo_m
             total_time = time.time() - start_time
             
             # Log statistics
-            successful_images = len([s for s in image_statuses if s[1] == "warming"])
-            failed_images = len([s for s in image_statuses if s[1] == "extraction_failed"])
-            no_face_images = len([s for s in image_statuses if s[1] == "no_face"])
-            
+            successful_images = [s[0] for s in image_statuses if s[1] == "warming"]
+            all_success_images.extend(successful_images)
+            failed_images = [s[0] for s in image_statuses if s[1] == "extraction_failed"]
+            all_failed_images.extend(failed_images)
+            no_face_images = [s for s in image_statuses if s[1] == "no_face"]
+            all_success_images.extend(no_face_images)
             logger.info(f"Group {group_id}: Processed {processed_count} images so far")
-            logger.info(f"  ✓ Successful: {successful_images}, ✗ Failed: {failed_images}, ⚠ No faces: {no_face_images}, 🔄 Skipped: {len(already_processed_statuses)}")
+            logger.info(f"  ✓ Successful: {len(successful_images)}, ✗ Failed: {len(failed_images)}, ⚠ No faces: {len(no_face_images)}, 🔄 Skipped: {len(already_processed_statuses)}")
             logger.info(f"  {total_faces} faces indexed total in {total_time:.2f}s")
             
             if images_to_process:  # Only calculate performance for actually processed images
@@ -960,36 +1174,55 @@ def process_group_optimized(group_id: int, indexer: OptimizedFaceIndexer, yolo_m
                            f"{len(all_records)/processing_time:.2f} faces/sec")
             
             if len(unprocessed) < config.BATCH_SIZE:
+                DatabaseManager.update_status_history(run_id , "extraction" , "group" , processed_count , len(all_failed_images) , len(all_success_images) , group_id , "done Extraction Failed for "+", \n".join(all_failed_images))
                 break
         
         logger.info(f"Completed processing group {group_id}: {processed_count} total images processed, {skipped_count} images skipped (already processed), {total_faces} faces indexed")
         
-    except Exception as e:
-        logger.error(f"Failed to process group {group_id}: {e}")
-        DatabaseManager.mark_group_process_status(group_id , 'failed')
+    except ProcessingError:
+        # Re-raise ProcessingError as-is to preserve error details
         raise
+    except Exception as e:
+        # Convert any unexpected errors to ProcessingError
+        logger.error(f"Unexpected error in process_group_optimized: {e}", exc_info=True)
+        raise ProcessingError(
+            f"Group processing failed with unexpected error: {str(e)}", 
+            group_id=group_id, 
+            reason="unexpected_error", 
+            retryable=False
+        )
 
-def main_optimized(group_id: int):
+def main_optimized():
     """Optimized main execution with connection validation and model pre-loading"""
+    run_id = int(time.time())
     
     # Step 1: Validate all connections
     logger.info("=== STEP 1: VALIDATING CONNECTIONS ===")
     if not ConnectionValidator.validate_all():
+        DatabaseManager.update_status(None , "error Validation Failed",True , "failed" )
+        DatabaseManager.update_status_history(run_id , "extraction" , "run" , None , None , None , None , "error Validation Failed")
         logger.error("Connection validation failed. Exiting.")
         return False
     
     # Step 2: Check if group exists and has work to do
     logger.info("=== STEP 2: VALIDATING GROUP ===")
-    if not DatabaseManager.check_group_exists(group_id):
+    group_id = DatabaseManager.get_or_assign_group_id()
+    if not group_id:
         logger.error(f"Group {group_id} not found or not in 'warm' status")
-        raise
-        
+        DatabaseManager.update_status(None , "No Group Found To Process",True , "waiting" )
+        DatabaseManager.update_status_history(run_id , "extraction" , "run" , None , None , None , None , "no_group")
+        return False
+    DatabaseManager.update_status(group_id , "Running",False , "healthy" )
+    DatabaseManager.update_status_history(run_id , "extraction" , "run" , None , None , None , group_id , "started")
     # Check if there are images to process
     unprocessed_count = len(DatabaseManager.fetch_unprocessed_images(group_id, 1))
     if unprocessed_count == 0:
         logger.info(f"No warm images found for group {group_id}, exiting")
-        return True
-    
+        DatabaseManager.update_status(group_id , "No Images Found To Process",True , "failed" )
+        DatabaseManager.update_status_history(run_id , "extraction" , "run" , None , None , None , group_id , "error Validation Failed")
+        return False
+ 
+
     logger.info(f"Group {group_id} validated and has images to process")
     
     # Step 3: Load models (expensive operation, do once)
@@ -1011,63 +1244,49 @@ def main_optimized(group_id: int):
     try:
         group_start = time.time()
         
-        # Mark group as being processed
-        DatabaseManager.mark_group_process_status(group_id , 'healthy')
-        
         # Process the group
-        process_group_optimized(group_id, indexer, yolo_model)
+        process_group_optimized(group_id, indexer, yolo_model,run_id)
         
         # Mark group as completed
         DatabaseManager.mark_group_processed(group_id)
-        DatabaseManager.mark_group_process_status(group_id , 'success')
-        
+        DatabaseManager.update_status(None , "Waiting",True , "done" )
+        DatabaseManager.update_status_history(run_id , "extraction" , "run" , None , None , None , group_id , "done")
+        DatabaseManager.update_last_provrssed_group_column(group_id)
         group_time = time.time() - group_start
         logger.info(f"Group {group_id} completed in {group_time:.2f}s")
-        
+    except ProcessingError as e:
+        msg = f"error in group {group_id}: {e}"
+        logger.error(msg)
+        DatabaseManager.update_status(group_id, msg, True, "failed")
+        DatabaseManager.update_status_history(
+            run_id, "extraction", "run", None, None, None, group_id, msg
+        )
+        return False
     except Exception as e:
-        logger.error(f"Failed to process group {group_id}: {e}")
-        DatabaseManager.mark_group_process_status(group_id , 'failed')  # Reset status on error
+        msg = f"error while processing group {group_id}: {e}"
+        logger.error(msg, exc_info=True)  # logs full traceback
+        DatabaseManager.update_status(group_id, msg, True, "failed")
+        DatabaseManager.update_status_history(
+            run_id, "extraction", "run", None, None, None, group_id, msg
+        )
         return False
     
     logger.info("=== PROCESSING COMPLETED SUCCESSFULLY ===")
     return True
-
-def parse_arguments():
-    """Parse command line arguments"""
-    parser = argparse.ArgumentParser(description='Face extraction script for a specific group')
-    parser.add_argument('group_id', type=int, help='Group ID to process')
-    parser.add_argument('--batch-size', type=int, default=25, help='Batch size for processing images')
-    parser.add_argument('--parallel-limit', type=int, default=1, help='Maximum parallel processes')
-    parser.add_argument('--log-level', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'], 
-                       default='INFO', help='Logging level')
-    
-    return parser.parse_args()
-
 def main_with_monitoring():
     """Main function with performance monitoring and command line arguments"""
     # Parse command line arguments
-    args = parse_arguments()
-    
-    # Update config with command line arguments
-    config.BATCH_SIZE = args.batch_size
-    config.PARALLEL_LIMIT = args.parallel_limit
-    
-    # Set logging level
-    logging.getLogger().setLevel(getattr(logging, args.log_level))
-    
-    logger.info(f"Starting face extraction for group {args.group_id}")
-    logger.info(f"Configuration: batch_size={args.batch_size}, parallel_limit={args.parallel_limit}")
     
     total_start = time.time()
     
     try:
-        success = main_optimized(args.group_id)
+        success = main_optimized()
         total_time = time.time() - total_start
         
         if success:
-            logger.info(f"🎉 Processing completed successfully for group {args.group_id} in {total_time:.2f}s")
+            logger.info(f"Processing completed successfully for group in {total_time:.2f}s")
         else:
-            logger.error(f"❌ Processing failed for group {args.group_id} after {total_time:.2f}s")
+            logger.error(f"[WARNING] Processing failed for group after {total_time:.2f}s")
             
         return success
         

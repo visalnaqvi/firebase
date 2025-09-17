@@ -3,7 +3,8 @@ const admin = require('firebase-admin');
 const sharp = require('sharp');
 const path = require('path');
 const serviceAccount = require('./firebase-key.json');
-const exifParser = require('exif-parser')
+const exifParser = require('exif-parser');
+const { error } = require('console');
 const fs = require("fs").promises
 
 admin.initializeApp({
@@ -22,6 +23,15 @@ const pool = new Pool({
     connectionString: "postgresql://postgres:AfldldzckDWtkskkAMEhMaDXnMqknaPY@ballast.proxy.rlwy.net:56193/railway"
     // connectionString: "postgresql://postgres:admin@localhost:5432/postgres"
 });
+class ProcessingError extends Error {
+    constructor(message, { groupId = null, reason = null, retryable = true } = {}) {
+        super(message);
+        this.name = "ProcessingError";
+        this.groupId = groupId;
+        this.reason = reason;
+        this.retryable = retryable;
+    }
+}
 
 // Configuration
 const BATCH_SIZE = 10
@@ -56,7 +66,7 @@ async function fetchUnprocessedImagesBatch(maxResults = FIREBASE_BATCH_SIZE, pag
         const options = {
             prefix: 'u_',
             maxResults: maxResults,
-            autoPaginate: false // Important: disable auto-pagination to control batch size
+            autoPaginate: false
         };
 
         if (pageToken) {
@@ -69,14 +79,14 @@ async function fetchUnprocessedImagesBatch(maxResults = FIREBASE_BATCH_SIZE, pag
         console.log(`✅ Retrieved ${files.length} files from Firebase Storage${nextPageToken ? ' (more available)' : ' (no more files)'}`);
 
         const unprocessedImages = [];
+        let failedImages = [];
 
+        // --- First Pass ---
         for (const file of files) {
             try {
-                // Get file metadata
                 const [metadata] = await file.getMetadata();
                 const customMetadata = metadata.metadata || {};
 
-                // Extract required fields from metadata
                 const imageData = {
                     id: customMetadata.id,
                     filename: customMetadata.filename,
@@ -88,28 +98,76 @@ async function fetchUnprocessedImagesBatch(maxResults = FIREBASE_BATCH_SIZE, pag
                     uploaded_at: customMetadata.uploaded_at
                 };
 
-                // Validate required fields
                 if (!imageData.id || !imageData.group_id || !imageData.created_by_user) {
                     console.log(`⚠️ Skipping file ${file.name} - missing required metadata`);
+                    failedImages.push(file); // store file for retry
                     continue;
                 }
 
                 unprocessedImages.push(imageData);
             } catch (error) {
                 console.error(`❌ Error reading metadata for ${file.name}:`, error.message);
+                failedImages.push(file);
             }
         }
 
+        // --- Second Retry Pass ---
+        if (failedImages.length > 0) {
+            console.log(`🔁 Retrying ${failedImages.length} failed images...`);
+
+            const stillFailed = [];
+            for (const file of failedImages) {
+                try {
+                    const [metadata] = await file.getMetadata();
+                    const customMetadata = metadata.metadata || {};
+
+                    const imageData = {
+                        id: customMetadata.id,
+                        filename: customMetadata.filename,
+                        group_id: customMetadata.group_id,
+                        created_by_user: customMetadata.user_id,
+                        firebase_path: file.name,
+                        file_size: metadata.size,
+                        content_type: metadata.contentType,
+                        uploaded_at: customMetadata.uploaded_at
+                    };
+
+                    if (!imageData.id || !imageData.group_id || !imageData.created_by_user) {
+                        console.log(`⚠️ Skipping file ${file.name} again - still missing metadata`);
+                        stillFailed.push(file.name);
+                        continue;
+                    }
+
+                    unprocessedImages.push(imageData);
+                } catch (error) {
+                    console.error(`❌ Retry failed for ${file.name}:`, error.message);
+                    stillFailed.push(file.name);
+                }
+            }
+
+            failedImages = stillFailed;
+        }
+
         console.log(`✅ Found ${unprocessedImages.length} valid unprocessed images in this batch`);
+        if (failedImages.length > 0) {
+            console.warn(`⚠️ ${failedImages.length} images permanently failed after retry:`, failedImages);
+        }
 
         return {
+            success: true,
             images: unprocessedImages,
+            failedImages,
+            filesFetchedFromFirebase: files.length,
+            failedImages,
             nextPageToken: nextPageToken,
             hasMore: !!nextPageToken
         };
     } catch (error) {
         console.error('❌ Error fetching images from Firebase:', error.message);
         return {
+            success: false,
+            error: error.message,
+            errorReason: "Not Able to Fetch Images from Firebase",
             images: [],
             nextPageToken: null,
             hasMore: false
@@ -117,12 +175,35 @@ async function fetchUnprocessedImagesBatch(maxResults = FIREBASE_BATCH_SIZE, pag
     }
 }
 
+async function renameFailedFiles(path) {
+    try {
+        const file = bucket.file("u_" + path);
+
+        const [renamedFile] = await file.rename("f_" + path);
+
+        console.log(`✅ File renamed from ${path} → ${renamedFile.name}`);
+        return {
+            success: true,
+            oldPath: path
+        };
+    } catch (error) {
+        console.error(`❌ Failed to rename file:`, error.message);
+        return {
+            success: false,
+            oldPath: path,
+            error: error.message
+        };
+    }
+}
+
 // Process a single image
 async function processSingleImage(image, planType) {
     const { id, firebase_path, filename, group_id, created_by_user, uploaded_at } = image;
+
     console.log(`🔃 Processing Image ${id} for group ${group_id}`);
 
     try {
+
         console.log(`🔧 Processing image ${id} from ${firebase_path}`);
 
         // Download image from Firebase
@@ -316,7 +397,7 @@ async function processImagesBatch(images, planType, parallel_limit) {
         console.log(`🔃 Processing chunk ${Math.floor(i / parallel_limit) + 1} /${Math.ceil(images.length / parallel_limit)
             } (${chunk.length} images)`);
 
-        const chunkPromises = chunk.map(image => processSingleImage(image, planType));
+        const chunkPromises = chunk.map((image) => processSingleImage(image, planType));
         const chunkResults = await Promise.all(chunkPromises);
         results.push(...chunkResults);
 
@@ -356,8 +437,7 @@ async function deleteOriginalFile(firebasePath, retryCount = 0) {
 }
 
 // Clean up original files in batches with parallel processing
-async function cleanupOriginalFiles(results) {
-    const successfulResults = results.filter(r => r.success);
+async function cleanupOriginalFiles(successfulResults) {
 
     if (successfulResults.length === 0) {
         console.log('⚠️ No successful results to cleanup');
@@ -381,7 +461,7 @@ async function cleanupOriginalFiles(results) {
 
         // Create cleanup promises for this batch
         const cleanupPromises = batch.map(result =>
-            deleteOriginalFile(result.firebase_path)
+            deleteOriginalFile("u_" + result)
         );
 
         try {
@@ -470,41 +550,42 @@ async function verifyDatabaseInsertion(client, results) {
 
 // Attempt single batch insert
 async function performBatchInsert(client, successfulResults) {
-    const valuesClauses = [];
-    const allParams = [];
-    let paramIndex = 1;
+    try {
+        const valuesClauses = [];
+        const allParams = [];
+        let paramIndex = 1;
 
-    for (const result of successfulResults) {
-        const { data } = result;
+        for (const result of successfulResults) {
+            const { data } = result;
 
-        valuesClauses.push(
-            `($${paramIndex}::uuid, $${paramIndex + 1}, $${paramIndex + 2}, $${paramIndex + 3}, $${paramIndex + 4}::timestamp, $${paramIndex + 5}, $${paramIndex + 6}::jsonb, $${paramIndex + 7}::bytea, $${paramIndex + 8}::bytea, $${paramIndex + 9}, $${paramIndex + 10}, $${paramIndex + 11}::timestamp, $${paramIndex + 12}, $${paramIndex + 13}, $${paramIndex + 14} , $${paramIndex + 15} , $${paramIndex + 16}::timestamp)`
-        );
+            valuesClauses.push(
+                `($${paramIndex}::uuid, $${paramIndex + 1}, $${paramIndex + 2}, $${paramIndex + 3}, $${paramIndex + 4}::timestamp, $${paramIndex + 5}, $${paramIndex + 6}::jsonb, $${paramIndex + 7}::bytea, $${paramIndex + 8}::bytea, $${paramIndex + 9}, $${paramIndex + 10}, $${paramIndex + 11}::timestamp, $${paramIndex + 12}, $${paramIndex + 13}, $${paramIndex + 14} , $${paramIndex + 15} , $${paramIndex + 16}::timestamp)`
+            );
 
-        allParams.push(
-            data.id,
-            data.group_id,
-            data.created_by_user,
-            data.filename,
-            data.uploaded_at,
-            data.status,
-            data.json_meta_data,
-            data.thumb_byte,
-            data.image_byte,
-            data.compressed_location,
-            data.artist,
-            data.dateCreated,
-            data.location,
-            data.signedUrl,
-            data.signedUrl3k,
-            data.signedUrlStripped,
-            new Date()
-        );
+            allParams.push(
+                data.id,
+                data.group_id,
+                data.created_by_user,
+                data.filename,
+                data.uploaded_at,
+                data.status,
+                data.json_meta_data,
+                data.thumb_byte,
+                data.image_byte,
+                data.compressed_location,
+                data.artist,
+                data.dateCreated,
+                data.location,
+                data.signedUrl,
+                data.signedUrl3k,
+                data.signedUrlStripped,
+                new Date()
+            );
 
-        paramIndex += 17;
-    }
+            paramIndex += 17;
+        }
 
-    const batchInsertQuery = `
+        const batchInsertQuery = `
         INSERT INTO images 
         (id, group_id, created_by_user, filename, uploaded_at, status, json_meta_data, thumb_byte, image_byte, compressed_location, artist, date_taken, location, signed_url, signed_url_3k , signed_url_stripped ,last_processed_at)
         VALUES ${valuesClauses.join(', ')}
@@ -523,26 +604,40 @@ async function performBatchInsert(client, successfulResults) {
             signed_url_stripped = EXCLUDED.signed_url_stripped
     `;
 
-    console.log(`🔃 Executing batch insert query with ${allParams.length} parameters...`);
-    const startTime = Date.now();
+        console.log(`🔃 Executing batch insert query with ${allParams.length} parameters...`);
+        const startTime = Date.now();
 
-    const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('Batch insert timeout after 180 seconds')), 180000);
-    });
+        const timeoutPromise = new Promise((_, reject) => {
+            setTimeout(() => reject(new Error('Batch insert timeout after 180 seconds')), 180000);
+        });
 
-    const insertResult = await Promise.race([
-        client.query(batchInsertQuery, allParams),
-        timeoutPromise
-    ]);
+        const insertResult = await Promise.race([
+            client.query(batchInsertQuery, allParams),
+            timeoutPromise
+        ]);
 
-    const duration = Date.now() - startTime;
-    console.log(`✅ Successfully batch inserted ${insertResult.rowCount} images in database (${duration}ms)`);
+        const duration = Date.now() - startTime;
+        console.log(`✅ Successfully batch inserted ${insertResult.rowCount} images in database (${duration}ms)`);
 
-    if (insertResult.rowCount !== successfulResults.length) {
-        console.warn(`⚠️ Expected to insert ${successfulResults.length} records, but inserted ${insertResult.rowCount}`);
+        if (insertResult.rowCount !== successfulResults.length) {
+            console.warn(`⚠️ Expected to insert ${successfulResults.length} records, but inserted ${insertResult.rowCount}`);
+        }
+
+        return {
+            success: true,
+            insertedIds: successfulResults.map(r => r.data.id),
+            failedIds: [],
+            rowCount: insertResult.rowCount
+        };
+    } catch (error) {
+        return {
+            success: false,
+            errorReason: "Batch Update Faild : " + error.message,
+            insertedIds: [],
+            failedIds: successfulResults.map(r => r.data.id)
+        };
     }
 
-    return insertResult.rowCount;
 }
 
 // Fallback: chunked inserts (smaller batches)
@@ -551,6 +646,8 @@ async function performChunkedInserts(client, successfulResults) {
     console.log(`🔃 Using chunked inserts with ${CHUNK_SIZE} records per chunk`);
 
     let totalInserted = 0;
+    const insertedIds = [];
+    const failedIds = []
     await client.query('BEGIN');
     try {
         for (let i = 0; i < successfulResults.length; i += CHUNK_SIZE) {
@@ -579,9 +676,15 @@ async function performChunkedInserts(client, successfulResults) {
                             signed_url_stripped = EXCLUDED.signed_url_stripped`,
                         [data.id, data.group_id, data.created_by_user, data.filename, data.uploaded_at, data.status, data.json_meta_data, data.thumb_byte, data.image_byte, data.compressed_location, data.artist, data.dateCreated, data.location, data.signedUrl, data.signedUrl3k, data.signedUrlStripped]
                     );
-                    totalInserted += insertResult.rowCount;
+                    if (insertResult.rowCount > 0) {
+                        insertedIds.push(data.id);
+                        totalInserted += insertResult.rowCount;
+                    } else {
+                        failedIds.push(data.id);
+                    }
                 } catch (error) {
                     console.error(`❌ Failed to insert image ${data.id} in chunk: `, error.message);
+                    failedIds.push(data.id);
                 }
             }
 
@@ -591,15 +694,19 @@ async function performChunkedInserts(client, successfulResults) {
     } catch (error) {
         await client.query('ROLLBACK');
         console.log("❌ Chunk insert error:", error.message);
-        throw error;
+        return { success: false, errorReason: "Chuck Update Failed : " + error.message, insertedIds: [] }
     }
 
-    console.log(`✅ Successfully inserted ${totalInserted} images using chunked approach`);
-    return totalInserted;
+    console.log(`✅ Successfully inserted ${insertedIds.length} images using chunked approach`);
+    if (failedIds.length) {
+        console.warn(`⚠️ Failed to insert ${failedIds.length} images:`, failedIds);
+    }
+
+    return { success: true, insertedIds, failedIds };
 }
 
 // Insert into database with all results at once using batch INSERT with fallback
-async function insertIntoDatabaseBatch(client, results) {
+async function insertIntoDatabaseBatch(client, results, run_id) {
     const successfulResults = results.filter(r => r.success);
     const failedResults = results.filter(r => !r.success);
 
@@ -610,129 +717,74 @@ async function insertIntoDatabaseBatch(client, results) {
 
     if (successfulResults.length === 0) {
         console.log('⚠️  No successful results to insert in database');
-        return { success: false, insertedCount: 0 };
+        return { success: true, failedIds: [], insertedIds: [] }
     }
 
     console.log(`🔃 Batch inserting database for ${successfulResults.length} successfully processed images`);
 
-    let insertedCount = 0;
 
     // Try batch insert first
     try {
         console.log(`🔃 Attempting single batch INSERT query...`);
         await client.query('BEGIN');
-        insertedCount = await performBatchInsert(client, successfulResults);
+        const batchInsertResponse = await performBatchInsert(client, successfulResults);
         await client.query('COMMIT');
 
-        // Verify the insertion was successful
-        const verification = await verifyDatabaseInsertion(client, results);
+        if (!batchInsertResponse.success) {
+            console.log(`⚠️  Batch INSERT failed: ${batchInsertResponse.errorReason} `);
+            await updateStatusHistory(client, run_id, "node_compression", "batch_db_insert", successfulResults.length, batchInsertResponse.failedIds.length, batchInsertResponse.insertedIds.length, successfulResults[0].group_id,
+                batchInsertResponse.errorReason + "\n trying chuck update for ids: " + batchInsertResponse.failedIds.join(", \n"))
+            // try {
+            //     console.log(`🔃 Starting Rollback`);
+            //     const rollbackPromise = client.query('ROLLBACK');
+            //     const rollbackTimeout = new Promise((_, reject) => {
+            //         setTimeout(() => reject(new Error('Rollback timeout after 180 seconds')), 0);
+            //     });
+            //     await Promise.race([rollbackPromise, rollbackTimeout]);
+            //     console.log(`✅ Rollback completed`);
+            // } catch (rollbackError) {
+            //     console.log(`⚠️  Rollback error: ${rollbackError.message} `);
+            //     new ProcessingError("Not able to do db roll back", {
+            //         reason: "Not able to do db roll back " + rollbackError.message
+            //     })
+            // }
 
-        if (verification.verified) {
-            console.log(`✅ Database insertion and verification successful`);
-            return { success: true, insertedCount };
-        } else {
-            console.warn(`⚠️ Database insertion completed but verification failed`);
-            return { success: false, insertedCount, verificationError: true };
-        }
-
-    } catch (batchError) {
-        console.log(`⚠️  Batch INSERT failed: ${batchError.message} `);
-
-        try {
-            console.log(`🔃 Starting Rollback`);
-            const rollbackPromise = client.query('ROLLBACK');
-            const rollbackTimeout = new Promise((_, reject) => {
-                setTimeout(() => reject(new Error('Rollback timeout after 180 seconds')), 180000);
-            });
-            await Promise.race([rollbackPromise, rollbackTimeout]);
-            console.log(`✅ Rollback completed`);
-        } catch (rollbackError) {
-            console.log(`⚠️  Rollback error: ${rollbackError.message} `);
-        }
-
-        // Try chunked inserts
-        try {
-            console.log(`🔃 Falling back to chunked inserts...`);
-            insertedCount = await performChunkedInserts(client, successfulResults);
-
-            // Verify the insertion was successful
-            const verification = await verifyDatabaseInsertion(client, results);
-
-            if (verification.verified) {
-                console.log(`✅ Chunked database insertion and verification successful`);
-                return { success: true, insertedCount };
-            } else {
-                console.warn(`⚠️ Chunked database insertion completed but verification failed`);
-                return { success: false, insertedCount, verificationError: true };
-            }
-
-        } catch (chunkError) {
-            console.log(`⚠️  Chunk INSERT failed: ${chunkError.message} `);
-
-            // Individual inserts as last resort
-            console.log(`🔃 Falling back to individual inserts...`);
-            let individualSuccessCount = 0;
-
-            for (const result of successfulResults) {
-                try {
-                    await client.query('BEGIN');
-                    const { data } = result;
-                    const insertResult = await client.query(
-                        `INSERT INTO images
-                         (id, group_id, created_by_user, filename, uploaded_at, status, json_meta_data, thumb_byte, image_byte, compressed_location, artist, date_taken, location, signed_url, signed_url_3k , signed_url_stripped , last_processed_at)
-                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15 , $16 , (NOW() AT TIME ZONE 'utc'))
-                         ON CONFLICT (id) DO UPDATE SET
-                            status = EXCLUDED.status,
-                            json_meta_data = EXCLUDED.json_meta_data,
-                            thumb_byte = EXCLUDED.thumb_byte,
-                            image_byte = EXCLUDED.image_byte,
-                            compressed_location = EXCLUDED.compressed_location,
-                            artist = EXCLUDED.artist,
-                            date_taken = EXCLUDED.date_taken,
-                            last_processed_at = (NOW() AT TIME ZONE 'utc'),
-                            location = EXCLUDED.location,
-                            signed_url = EXCLUDED.signed_url,
-                            signed_url_3k = EXCLUDED.signed_url_3k,
-                            signed_url_stripped = EXCLUDED.signed_url_stripped`,
-                        [data.id, data.group_id, data.created_by_user, data.filename, data.uploaded_at, data.status, data.json_meta_data, data.thumb_byte, data.image_byte, data.compressed_location, data.artist, data.dateCreated, data.location, data.signedUrl, data.signedUrl3k, data.signedUrlStripped]
-                    );
-                    await client.query('COMMIT');
-
-                    if (insertResult.rowCount > 0) {
-                        individualSuccessCount++;
-                    }
-                } catch (individualError) {
-                    console.error(`❌ Failed to insert image ${result.data.id}: `, individualError.message);
-                    try {
-                        await client.query('ROLLBACK');
-                    } catch (rollbackError) {
-                        console.log(`⚠️  Individual rollback error: ${rollbackError.message} `);
-                    }
+            // Try chunked inserts
+            try {
+                console.log(`🔃 Falling back to chunked inserts...`);
+                const chunkInsertResponse = await performChunkedInserts(client, successfulResults);
+                if (!chunkInsertResponse.success) {
+                    await updateStatusHistory(client, run_id, "node_compression", "chunk_db_insert", successfulResults.length, chunkInsertResponse.failedIds.length, chunkInsertResponse.insertedIds.length, successfulResults[0].group_id,
+                        chunkInsertResponse.errorReason + "ids: " + chunkInsertResponse.failedIds.join(", \n"))
+                    return { success: false, failedIds: successfulResults.map(r => r.id) }
                 }
+                return { success: true, failedIds: chunkInsertResponse.failedIds, insertedIds: chunkInsertResponse.insertedIds }
+
+            } catch (chunkError) {
+                console.log(`⚠️  Chunk INSERT failed: ${chunkError.message} `);
+
+                await updateStatusHistory(client, run_id, "node_compression", "chunk_db_insert", successfulResults.length, null, null, successfulResults[0].group_id,
+                    chunkError.message + "ids: " + successfulResults.map(r => r.id).join(", \n"))
+                return { success: false, failedIds: successfulResults.map(r => r.id), error: chunkError.message, insertedIds: [] }
+
             }
-
-            console.log(`✅ Successfully inserted ${individualSuccessCount}/${successfulResults.length} images using individual inserts`);
-
-            // For individual inserts, we'll trust the count as verification
-            return {
-                success: individualSuccessCount > 0,
-                insertedCount: individualSuccessCount,
-                partialSuccess: individualSuccessCount > 0 && individualSuccessCount < successfulResults.length
-            };
         }
+        return { success: true, failedIds: batchInsertResponse.failedIds, insertedIds: batchInsertResponse.insertedIds }
+    } catch (batchError) {
+        await updateStatusHistory(client, run_id, "node_compression", "batch_db_insert", successfulResults.length, null, null, successfulResults[0].group_id,
+            batchError.message + "db update failed for ids: " + successfulResults.map(r => r.id).join(", \n"))
+        return { success: false, failedIds: successfulResults.map(r => r.id), error: batchError.message }
     }
 }
 
 // Process images in batches of BATCH_SIZE with database insert after each batch
-async function processImagesBatches(client, images, planType) {
+async function processImagesBatches(client, images, planType, groupId, run_id) {
     console.log(`🔃 Processing ${images.length} images in batches of ${BATCH_SIZE}`);
-
-    let totalProcessed = 0;
-    let totalFailed = 0;
     let totalCleaned = 0;
     let totalCleanupFailed = 0;
     let allResults = [];
-
+    let totalImagesInsertedIntoDB = []
+    let totalImagesFailedDBInsertion = []
     // Process images in batches of BATCH_SIZE
     for (let i = 0; i < images.length; i += BATCH_SIZE) {
         const batch = images.slice(i, i + BATCH_SIZE);
@@ -742,45 +794,80 @@ async function processImagesBatches(client, images, planType) {
         console.log(`🔃 Processing batch ${batchNumber}/${totalBatches} (${batch.length} images)`);
         // const parallelLimit = await getDynamicParallelLimit(client);
         const parallelLimit = 10;
+
         // Process this batch
         const batchResults = await processImagesBatch(batch, planType, parallelLimit);
         allResults.push(...batchResults);
 
         // Insert into database immediately after processing this batch
         console.log(`🔃 Inserting database for batch ${batchNumber}/${totalBatches}`);
-        const insertionResult = await insertIntoDatabaseBatch(client, batchResults);
+        const insertionResult = await insertIntoDatabaseBatch(client, batchResults, run_id);
 
+        totalImagesInsertedIntoDB.push(...insertionResult.insertedIds);
+        totalImagesFailedDBInsertion.push(...insertionResult.failedIds);
+        totalImagesFailedDBInsertion.push(...batchResults.filter(r => !r.success));
+
+        for (const id of insertionResult.failedIds) {
+            try {
+                const res = await renameFailedFiles(id)
+                if (!res.success) {
+                    await updateStatusHistory(client, run_id, "node_compression", "failed_renaming", insertionResult.failedIds.length, null, null, groupId, "Failed Files cannot be renamed")
+                    throw new ProcessingError("Cannot rename failed files", {
+                        groupId: groupId,
+                        reason: "Cannot rename failed files : " + res.error
+                    })
+                }
+
+            } catch (error) {
+                await updateStatusHistory(client, run_id, "node_compression", "failed_renaming", insertionResult.failedIds.length, null, null, groupId, "Failed Files cannot be renamed")
+                throw new ProcessingError("Cannot rename failed files", {
+                    groupId: groupId,
+                    reason: "Cannot rename failed files : " + error.message
+                })
+            }
+        }
+
+
+        for (const record of batchResults.filter(r => !r.success)) {
+            try {
+                const res = await renameFailedFiles(record.id)
+                if (!res.success) {
+                    await updateStatusHistory(client, run_id, "node_compression", "failed_renaming", insertionResult.failedIds.length, null, null, groupId, "Failed Files cannot be renamed")
+                    throw new ProcessingError("Cannot rename failed files", {
+                        groupId: groupId,
+                        reason: "Cannot rename failed files : " + res.error
+                    })
+                }
+            } catch (error) {
+                await updateStatusHistory(client, run_id, "node_compression", "failed_renaming", insertionResult.failedIds.length, null, null, groupId, "Failed Files cannot be renamed")
+                throw new ProcessingError("Cannot rename failed files", {
+                    groupId: groupId,
+                    reason: "Cannot rename failed files : " + error.message
+                })
+            }
+        }
         // Only cleanup if database insertion was successful
         if (insertionResult.success) {
             console.log(`🔃 Cleaning up original files for batch ${batchNumber}/${totalBatches}`);
 
-            const cleanupResult = await cleanupOriginalFiles(batchResults);
+            const cleanupResult = await cleanupOriginalFiles(insertionResult.insertedIds);
 
             totalCleaned += cleanupResult.totalDeleted;
             totalCleanupFailed += cleanupResult.totalFailed;
 
             if (!cleanupResult.cleanupSuccess) {
                 console.warn(`⚠️ Some files in batch ${batchNumber}/${totalBatches} could not be cleaned up`);
+                await updateStatusHistory(client, run_id, "node_compression", "cleaning", insertionResult.insertedIds.length, null, null, groupId, "Some files in batch could not be cleaned up")
             }
         } else {
             console.log(`⚠️ Skipping cleanup for batch ${batchNumber}/${totalBatches} due to database insertion failure`);
-
-            // Log specific reasons for insertion failure
-            if (insertionResult.verificationError) {
-                console.warn(`⚠️ Database verification failed for batch ${batchNumber}/${totalBatches} - records may not have been properly inserted`);
-            }
-            if (insertionResult.partialSuccess) {
-                console.warn(`⚠️ Partial database insertion success for batch ${batchNumber}/${totalBatches} - only ${insertionResult.insertedCount} out of ${batchResults.filter(r => r.success).length} records inserted`);
-            }
+            throw new ProcessingError("Failed to do database insert", {
+                reason: "Failed to do database insert : " + insertionResult.error
+            })
         }
 
-        const successfulCount = batchResults.filter(r => r.success).length;
-        const failedCount = batchResults.filter(r => !r.success).length;
 
-        totalProcessed += successfulCount;
-        totalFailed += failedCount;
-
-        console.log(`✅ Completed batch ${batchNumber}/${totalBatches}. Batch: ${successfulCount}/${batch.length} successful, ${failedCount} failed. Total: ${totalProcessed} processed, ${totalFailed} failed, ${totalCleaned} cleaned up`);
+        console.log(`✅ Completed batch ${batchNumber}/${totalBatches}`);
 
         // Optional: Add a small delay between batches
         if (batchNumber < totalBatches) {
@@ -789,32 +876,89 @@ async function processImagesBatches(client, images, planType) {
         }
     }
 
-    console.log(`🎉 All batches completed. Final stats: ${totalProcessed} processed, ${totalFailed} failed, ${totalCleaned} files cleaned up, ${totalCleanupFailed} cleanup failures`);
+    console.log(`🎉 All batches completed. Final stats`);
 
     return {
-        totalProcessed,
-        totalFailed,
         totalCleaned,
         totalCleanupFailed,
-        allResults
+        allResults,
+        totalImagesInsertedIntoDB,
+        totalImagesFailedDBInsertion
     };
 }
 
 // Get plan type for a group
 async function getGroupPlanType(client, groupIds) {
-    const { rows } = await client.query(
-        `SELECT id, plan_type 
-     FROM groups 
-     WHERE id = ANY($1)`,
-        [groupIds]
-    );
+    try {
 
-    // Map to [{ groupId, planType }]
-    return rows.map(r => ({
-        groupId: r.id,
-        planType: r.plan_type
-    }));
+        const { rows } = await client.query(
+            `SELECT id, plan_type 
+     FROM groups
+     WHERE id = ANY($1)`,
+            [groupIds]
+        );
+
+        // Map to [{ groupId, planType }]
+        planDeatils = rows.map(r => ({
+            groupId: r.id,
+            planType: r.plan_type
+        }));
+        return {
+            success: true,
+            planDeatils: planDeatils
+        }
+    } catch (error) {
+        console.error("Error getting play type:", error);
+
+        // optional: rethrow to let caller handle it
+        // throw error;
+
+        // or return a failure object
+        return { success: false, errorReason: "getting plan type for groups", error: error.message };
+    }
 }
+
+async function updateStatusHistory(client, run_id, task, sub_task, totalImagesInitialized, totalImagesFailed, totalImagesProcessed, groupId, fail_reason) {
+    try {
+        await client.query(
+            `INSERT INTO process_history 
+        (worker_id,run_id , task,sub_task, initialized_count, success_count, failed_count, group_id, ended_at , fail_reason)
+       VALUES 
+        (1 ,$7, $6,$8, $1, $2, $3, $4, NOW() , $5)`,
+            [totalImagesInitialized, totalImagesProcessed, totalImagesFailed, groupId, fail_reason, task, run_id, sub_task]
+        );
+
+        return { success: true };
+    } catch (error) {
+        console.error("Error inserting into process_history:", error);
+
+        // optional: rethrow to let caller handle it
+        // throw error;
+
+        // or return a failure object
+        return { success: false, errorReason: "updating history", error: error.message };
+    }
+}
+
+async function updateStatus(client, groupId, failReason, isIdeal) {
+    try {
+        await client.query(
+            `UPDATE process_status 
+             SET task_status = 'failed', 
+                 processing_group = $1, 
+                 fail_reason = $2, 
+                 ended_at = NOW(), 
+                 is_ideal = $3
+             WHERE task = 'node_compression'`,
+            [groupId, failReason, isIdeal]
+        );
+        return { success: true };
+    } catch (error) {
+        console.error("Error updating process status:", error);
+        return { success: false, errorReason: "updating status", error: error.message };
+    }
+}
+
 
 // Enhanced cleanup function for emergency/manual cleanup
 async function emergencyCleanupOriginalFiles(client, dryRun = true) {
@@ -898,6 +1042,8 @@ async function processImages() {
 
     try {
         while (true) {
+            const run_id = Date.now()
+            await updateStatusHistory(client, run_id, "node_compression", "run", null, null, null, null, "")
             console.log("🔃 Starting new processing cycle");
 
             let pageToken = null;
@@ -905,14 +1051,26 @@ async function processImages() {
             let totalProcessedAllBatches = 0;
             let totalCleanedAllBatches = 0;
             let totalBatchesProcessed = 0;
-
+            let totalAllImagesProcessed = [];
+            let totalAllImagesProcessFailed = [];
+            let totalImagesInitialized = 0;
+            let totalMetaDataFailedImages = [];
             // Keep fetching and processing batches until no more images
             while (hasMoreImages) {
                 console.log(`🔃 Fetching batch ${totalBatchesProcessed + 1} from Firebase Storage`);
 
                 // Fetch batch of unprocessed images from Firebase with proper pagination
-                const { images: unprocessedImages, nextPageToken, hasMore } = await fetchUnprocessedImagesBatch(FIREBASE_BATCH_SIZE, pageToken);
+                const resFromFirebaseFetch = await fetchUnprocessedImagesBatch(FIREBASE_BATCH_SIZE, pageToken);
+                totalImagesInitialized += resFromFirebaseFetch.filesFetchedFromFirebase
+                totalMetaDataFailedImages.push(...resFromFirebaseFetch.failedImages)
+                if (!resFromFirebaseFetch.success) {
+                    throw new ProcessingError(resFromFirebaseFetch.error, {
+                        reason: resFromFirebaseFetch.errorReason + " : " + resFromFirebaseFetch.error,
+                        retryable: true,
+                    });
+                }
 
+                const { images: unprocessedImages, nextPageToken, hasMore } = resFromFirebaseFetch;
                 if (unprocessedImages.length === 0) {
                     console.log("⏸️ No more unprocessed images found in this batch");
                     hasMoreImages = false;
@@ -932,18 +1090,35 @@ async function processImages() {
 
                 let batchProcessedCount = 0;
                 let batchCleanedCount = 0;
-                const planTypes = await getGroupPlanType(client, Object.keys(imagesByGroup));
+                const planTypesResonse = await getGroupPlanType(client, Object.keys(imagesByGroup));
+                if (!planTypesResonse.success) {
+                    throw new ProcessingError(planTypesResonse.error, {
+                        groupId: null,
+                        reason: planTypesResonse.errorReason + " : " + planTypesResonse.error,
+                        retryable: false,
+                    });
+                }
                 // Process each group in this batch
                 for (const [groupId, groupImages] of Object.entries(imagesByGroup)) {
                     await fs.mkdir(path.join(__dirname, "warm-images", `${groupId}`), { recursive: true });
                     console.log(`🔃 Processing ${groupImages.length} images for group ${groupId} (Batch ${totalBatchesProcessed + 1})`);
 
                     // Get plan type for this group
-                    const planType = planTypes[groupId];
+                    const planTypeEntry = planTypesResonse.planDeatils.find(p => p.groupId == groupId);
+                    // const planType = planTypeEntry.planType;
+                    const planType = planTypeEntry.planType;
                     console.log(`📋 Group ${groupId} plan type: ${planType}`);
+                    if (!["lite", "elite", "pro"].includes(planType)) {
+                        updateStatusHistory(client, run_id, "node_compression", "group", totalImagesInitialized, totalImagesInitialized - totalAllImagesProcessed.length, totalAllImagesProcessed.length, groupId, "Plan Type not found for group " + groupId)
+                        continue;
+                    }
+
 
                     // Process all images in this group
-                    const { totalProcessed, totalCleaned } = await processImagesBatches(client, groupImages, planType);
+                    const { totalProcessed, totalCleaned, allResults, totalImagesInsertedIntoDB, totalImagesFailedDBInsertion } = await processImagesBatches(client, groupImages, planType, groupId, run_id);
+                    totalAllImagesProcessed.push(...totalImagesInsertedIntoDB.map(r => r.id));
+                    totalAllImagesProcessFailed.push(...totalImagesFailedDBInsertion.map(r => r.id));
+                    await updateStatusHistory(client, run_id, "node_compression", "group", groupImages.length, totalImagesFailedDBInsertion.length, totalImagesInsertedIntoDB.length, groupId, "DB insertion failed for " + totalImagesFailedDBInsertion.join(" , \n") + " \n")
                     batchProcessedCount += totalProcessed;
                     batchCleanedCount += totalCleaned;
 
@@ -969,6 +1144,7 @@ async function processImages() {
 
             if (totalProcessedAllBatches === 0) {
                 console.log("⏸️ No unprocessed images found in entire cycle, waiting...");
+                await updateStatusHistory(client, run_id, "node_compression", "run", totalImagesInitialized, totalImagesInitialized - totalAllImagesProcessed.length, totalAllImagesProcessed.length, null, "DB insertion failed for " + totalAllImagesProcessFailed.join(" , \n") + " \n" + "Meta Data Not Fetched:" + totalMetaDataFailedImages.join(" , \n"))
                 await new Promise(res => setTimeout(res, 300000)); // wait 5 minutes
             } else {
                 console.log(`🎉 Completed full processing cycle. Total batches: ${totalBatchesProcessed}, Total processed: ${totalProcessedAllBatches}, Total files cleaned up: ${totalCleanedAllBatches}`);
@@ -979,11 +1155,22 @@ async function processImages() {
             }
         }
     } catch (err) {
-        console.error('❌ Error processing images:', err);
+        if (err instanceof ProcessingError) {
+            console.error(`❌ ProcessingError: ${err.message}`, {
+                groupId: err.groupId,
+                reason: err.reason,
+            });
 
-        // Wait before retrying in case of errors
-        console.log('⏸️ Waiting before retry due to error...');
-        await new Promise(resolve => setTimeout(resolve, 30000)); // 30 second pause on error
+            // call your DB status update in one place
+            await updateStatus(client, null, err.reason, true);
+
+        } else {
+            // unexpected error
+            console.error("❌ Unexpected error:", err);
+            await updateStatus(client, null, err.message, true);
+            console.log("⏸️ Waiting before retry...");
+            await new Promise(resolve => setTimeout(resolve, 30000));
+        }
     } finally {
         client.release();
         await pool.end();
@@ -1005,14 +1192,6 @@ async function runEmergencyCleanup(dryRun = true) {
         await pool.end();
     }
 }
-
-// Export functions for external use
-module.exports = {
-    processImages,
-    runEmergencyCleanup,
-    cleanupOriginalFiles,
-    emergencyCleanupOriginalFiles
-};
 
 // Run the main process if this file is executed directly
 if (require.main === module) {

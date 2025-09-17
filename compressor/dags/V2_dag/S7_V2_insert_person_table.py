@@ -3,8 +3,186 @@ import json
 import psycopg2
 from psycopg2.extras import execute_values
 from collections import defaultdict
-import argparse
+from typing import Optional
+import time
+class ProcessingError(Exception):
+    def __init__(self, message, group_id=None, reason=None, retryable=True):
+        super().__init__(message)
+        self.group_id = group_id
+        self.reason = reason
+        self.retryable = retryable
 
+    def __str__(self):
+        return f"ProcessingError: {self.args[0]} (group_id={self.group_id}, reason={self.reason}, retryable={self.retryable})"
+def get_or_assign_group_id():
+    """
+    Fetch the active group_id for extraction task.
+    - If processing_group has a value → return it
+    - Else if next_group_in_queue has a value → move it to processing_group,
+    set next_group_in_queue = NULL, return it
+    - Else return None
+    """
+    conn = None
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            # Fetch both columns
+            cur.execute(
+                """
+                SELECT processing_group, next_group_in_queue
+                FROM process_status
+                WHERE task = 'insertion'
+                LIMIT 1
+                """
+            )
+            row = cur.fetchone()
+
+            if not row:
+                return None
+
+            processing_group, next_group_in_queue = row
+
+            if processing_group:
+                return processing_group
+
+            if next_group_in_queue:
+                # Promote next_group_in_queue → processing_group
+                cur.execute(
+                    """
+                    UPDATE process_status
+                    SET processing_group = %s,
+                        next_group_in_queue = NULL
+                    WHERE task = 'insertion'
+                    """,
+                    (next_group_in_queue,)
+                )
+                conn.commit()
+                return next_group_in_queue
+
+            return None
+    except Exception as e:
+        print("❌ Error in get_or_assign_group_id:", e)
+        return None
+
+
+def update_status_history(
+    run_id: int,
+    task: str,
+    sub_task: str,
+    totalImagesInitialized: int,
+    totalImagesFailed: int,
+    totalImagesProcessed: int,
+    groupId: Optional[str],
+    fail_reason: Optional[str]
+) -> bool:
+    """
+    Insert a record into process_history.
+    Returns True if insert succeeded, False otherwise.
+    """
+
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO process_history
+                        (worker_id, run_id, task, sub_task,
+                        initialized_count, success_count, failed_count,
+                        group_id, ended_at, fail_reason)
+                    VALUES
+                        (%s, %s, %s, %s,
+                        %s, %s, %s,
+                        %s, NOW(), %s)
+                    """,
+                    (
+                        1,                       # worker_id
+                        run_id,
+                        task,
+                        sub_task,
+                        totalImagesInitialized,
+                        totalImagesProcessed,
+                        totalImagesFailed,
+                        groupId,
+                        fail_reason,
+                    )
+                )
+                conn.commit()
+                return True
+    except Exception as e:
+        print(f"❌ Error inserting into process_history: {e}")
+        return False
+    
+    
+def update_status(group_id, fail_reason, is_ideal , status):
+    """
+    Updates process_status table where task = 'insertion'
+    Returns a dict with success flag and optional error.
+    """
+    conn = None
+
+    
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE process_status
+                SET task_status = %s,
+                    processing_group = %s,
+                    fail_reason = %s,
+                    ended_at = NOW(),
+                    is_ideal = %s
+                WHERE task = 'insertion'
+                """,
+                (status , group_id, fail_reason, is_ideal)
+            )
+        conn.commit()
+        return {"success": True}
+    except Exception as e:
+        print("❌ Error updating process status:", e)
+        if conn:
+            conn.rollback()
+        return {"success": False, "errorReason": "updating status", "error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+            
+def update_last_provrssed_group_column(group_id):
+        """
+        Updates process_status table where task = 'extraction'
+        Returns a dict with success flag and optional error.
+        """
+        conn = None
+        
+        try:
+            conn = get_db_connection()
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE process_status
+                    SET last_group_processed = %s
+                    WHERE task = 'insertion'
+                    """,
+                    (group_id,)
+                )
+                cur.execute(
+                    """
+                    UPDATE process_status
+                    SET next_group_in_queue = %s
+                    WHERE task = 'thumbnail'
+                    """,
+                    (group_id,)
+                )
+            conn.commit()
+            return {"success": True}
+        except Exception as e:
+            print("❌ Error updating process status:", e)
+            if conn:
+                conn.rollback()
+            return {"success": False, "errorReason": "updating status", "error": str(e)}
+        finally:
+            if conn:
+                conn.close()
 def get_db_connection():
     return psycopg2.connect(
         host="ballast.proxy.rlwy.net",
@@ -21,23 +199,7 @@ def check_group_exists(group_id: int) -> bool:
             cur.execute("SELECT id FROM groups WHERE id = %s AND status = 'warmed' and last_processed_step='grouping'", (group_id,))
             result = cur.fetchone()
             return result is not None
-def mark_group_process_status(group_id , status) -> None:
-            """Mark group_id as being processed"""
-            if not group_id:
-                return
-                
-            with get_db_connection() as conn:
-                with conn.cursor() as cur:
-                    query = """
-                        UPDATE process_status
-                        SET group_id = %s,
-                        running = 'insertion',
-                        status = %s,
-                        started_at = NOW()
-                        WHERE id = 1
-                    """
-                    cur.execute(query, (group_id,status))
-                    conn.commit()
+
 def load_faces_from_json(group_id):
     """Load faces data from JSON file"""
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -282,12 +444,16 @@ def sync_persons():
 
 def sync_single_group(group_id):
     """Sync persons for a single group (useful for testing)"""
-    if not check_group_exists(group_id):
-        print(f"Group {group_id} not found")
-        raise
+    run_id = int(time.time())
+    if not group_id:
+        update_status(None , "No group to process" , True , "waiting")
+        update_status_history(run_id , "insertion" , "group" , None , None  , None , group_id , "no_group Found")
+        return True
+   
     conn = get_db_connection()
-    mark_group_process_status(group_id, 'healthy')
     try:
+        update_status(group_id , "running" , False , "healthy")
+        update_status_history(run_id , "insertion" , "group" , None , None  , None , group_id , "started")
         print(f"[PROCESSING] Processing single group {group_id}")
 
         # Load faces data from JSON file
@@ -313,23 +479,23 @@ def sync_single_group(group_id):
                 WHERE id = %s
             """, (group_id,))
             conn.commit()
-        mark_group_process_status(group_id, 'done')
+        update_status(None , "" , True , "done")
+        update_status_history(run_id , "insertion" , "group" , None , None  , None , group_id , "done")
+        update_last_provrssed_group_column(group_id)
     except Exception as e:
         print(f"[WARNING] Error in sync_single_group: {e}")
-        mark_group_process_status(group_id, 'failed')
         conn.rollback()
-
+        update_status(group_id , f"Error while trying insertion : {e}" , True , "failed")
+        update_status_history(run_id , "insertion" , "group" , None , None  , None , group_id , f"error while trying insertion : {e}")
     finally:
         conn.close()
 
 if __name__ == "__main__":
     # Sync all warmed groups
     # sync_persons()
-    parser = argparse.ArgumentParser(description="Process face quality for a specific group.")
-    parser.add_argument("group_id", type=int, help="Group ID to process")
-    args = parser.parse_args()
+   
 
-    group_id = args.group_id
-
+    group_id = get_or_assign_group_id()
     # Or sync a single group for testing:
-    sync_single_group(group_id)
+    success = sync_single_group(group_id)
+    exit(0 if success else 1)

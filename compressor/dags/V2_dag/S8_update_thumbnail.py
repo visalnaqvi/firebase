@@ -280,7 +280,7 @@ def main():
                     WHERE id = %s
                 """, (group_id,))
                 conn.commit()
-        update_status(group_id , f"done" , True , "done")
+        update_status(None , f"done" , True , "done")
         update_status_history(run_id , "thumbnail" , "run" , None , None , None , group_id , f"done")
         update_last_provrssed_group_column(group_id)
         return True

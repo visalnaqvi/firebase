@@ -138,7 +138,7 @@ def update_status(group_id, fail_reason, is_ideal , status):
                             fail_reason = %s,
                             ended_at = NOW(),
                             is_ideal = %s
-                        WHERE task = 'groping'
+                        WHERE task = 'grouping'
                         """,
                         (status , fail_reason, is_ideal)
                     )
@@ -151,7 +151,7 @@ def update_status(group_id, fail_reason, is_ideal , status):
                             fail_reason = %s,
                             ended_at = NOW(),
                             is_ideal = %s
-                        WHERE task = 'groping'
+                        WHERE task = 'grouping'
                         """,
                         (status , group_id, fail_reason, is_ideal)
                     )

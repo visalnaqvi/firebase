@@ -228,7 +228,7 @@ def process_group(group_id: int):
 
                 if not rows:
                     logger.warning(f"No persons found for group {group_id}")
-                    return
+                    raise ProcessingError("No Persons found for this group")
 
                 logger.info(f"Found {len(rows)} records for group {group_id}")
 
@@ -237,7 +237,7 @@ def process_group(group_id: int):
 
                     if not os.path.exists(image_path):
                         logger.error(f"Image not found: {image_path} (person_id={person_id})")
-                        continue
+                        raise ProcessingError(f"Image not found: {image_path} (person_id={person_id})")
 
                     try:
                         with open(image_path, "rb") as f:

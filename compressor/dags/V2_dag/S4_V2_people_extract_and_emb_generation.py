@@ -490,7 +490,7 @@ class DatabaseManager:
                     SET status = 'warming',
                         last_processed_at = NOW(),
                         last_processed_step = 'extraction'
-                    WHERE id = %s AND status = 'warm'
+                    WHERE id = %s
                 """
                 cur.execute(query, (group_id,))
                 conn.commit()

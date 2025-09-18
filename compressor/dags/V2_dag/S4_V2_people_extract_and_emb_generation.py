@@ -183,10 +183,10 @@ class ConnectionValidator:
         """Validate all connections"""
         logger.info("Validating connections...")
         db_ok = ConnectionValidator.validate_database()
-        # qdrant_ok = ConnectionValidator.validate_qdrant()
+        qdrant_ok = ConnectionValidator.validate_qdrant()
         firebase_ok = ConnectionValidator.validate_firebase()
         
-        if db_ok and firebase_ok:
+        if db_ok and qdrant_ok and firebase_ok:
             logger.info("✓ All connections validated successfully")
             return True
         else:
@@ -248,6 +248,22 @@ class DatabaseManager:
                     # Fetch both columns
                     cur.execute(
                         """
+    select next_group_in_queue FROM process_status
+                        WHERE task = 'quality_assignment'
+                        LIMIT 1
+"""
+                    )
+                    row = cur.fetchone()
+
+                    if not row:
+                        return None
+                    
+                    q_next_group_id = row[0]
+                    if q_next_group_id:
+                        raise PermissionError("Quality Assignment step is full")
+                    
+                    cur.execute(
+                        """
                         SELECT processing_group, next_group_in_queue
                         FROM process_status
                         WHERE task = 'extraction'
@@ -281,7 +297,7 @@ class DatabaseManager:
                     return None
         except Exception as e:
             print("❌ Error in get_or_assign_group_id:", e)
-            return None
+            raise 
 
     @staticmethod
     def update_status_history(
@@ -626,7 +642,7 @@ class OptimizedFaceIndexer:
         self._initialize_models()
         
         # Create connection pool for Qdrant
-        # self.qdrant = QdrantClient(host=config.QDRANT_HOST, port=config.QDRANT_PORT)
+        self.qdrant = QdrantClient(host=config.QDRANT_HOST, port=config.QDRANT_PORT)
         
         # Cache for Firebase bucket
         self.firebase_bucket = storage.bucket()
@@ -1032,7 +1048,7 @@ class OptimizedFaceIndexer:
 def process_group_optimized(group_id: int, indexer: OptimizedFaceIndexer, yolo_model , run_id) -> None:
     """Optimized group processing with batched operations and JSON check"""
     try:
-        # indexer.setup_collection(str(group_id))
+        indexer.setup_collection(str(group_id))
         logger.info(f"Processing group {group_id}")
         
         # Load already processed image IDs from JSON once at the beginning
@@ -1116,15 +1132,15 @@ def process_group_optimized(group_id: int, indexer: OptimizedFaceIndexer, yolo_m
                 # Step 3: Batch insert to Qdrant
                 logger.info("Step 3: Inserting to Qdrant...")
                 qdrant_start = time.time()
-                # try:
-                #     indexer.batch_upsert_to_qdrant(all_records, str(group_id))
-                # except Exception as e:
-                #     raise ProcessingError(
-                #         f"Qdrant insertion failed: {str(e)}", 
-                #         group_id=group_id, 
-                #         reason="qdrant_error", 
-                #         retryable=True
-                #     )
+                try:
+                    indexer.batch_upsert_to_qdrant(all_records, str(group_id))
+                except Exception as e:
+                    raise ProcessingError(
+                        f"Qdrant insertion failed: {str(e)}", 
+                        group_id=group_id, 
+                        reason="qdrant_error", 
+                        retryable=True
+                    )
                 qdrant_time = time.time() - qdrant_start
                 logger.info(f"Qdrant insert completed in {qdrant_time:.2f}s")
                 
@@ -1197,53 +1213,54 @@ def process_group_optimized(group_id: int, indexer: OptimizedFaceIndexer, yolo_m
 def main_optimized():
     """Optimized main execution with connection validation and model pre-loading"""
     run_id = int(time.time())
-    
-    # Step 1: Validate all connections
-    logger.info("=== STEP 1: VALIDATING CONNECTIONS ===")
-    if not ConnectionValidator.validate_all():
-        DatabaseManager.update_status(None , "error Validation Failed",True , "failed" )
-        DatabaseManager.update_status_history(run_id , "extraction" , "run" , None , None , None , None , "error Validation Failed")
-        logger.error("Connection validation failed. Exiting.")
-        return False
-    
-    # Step 2: Check if group exists and has work to do
-    logger.info("=== STEP 2: VALIDATING GROUP ===")
-    group_id = DatabaseManager.get_or_assign_group_id()
-    if not group_id:
-        logger.error(f"Group {group_id} not found or not in 'warm' status")
-        DatabaseManager.update_status(None , "No Group Found To Process",True , "waiting" )
-        DatabaseManager.update_status_history(run_id , "extraction" , "run" , None , None , None , None , "no_group")
-        return False
-    DatabaseManager.update_status(group_id , "Running",False , "healthy" )
-    DatabaseManager.update_status_history(run_id , "extraction" , "run" , None , None , None , group_id , "started")
-    # Check if there are images to process
-    unprocessed_count = len(DatabaseManager.fetch_unprocessed_images(group_id, 1))
-    if unprocessed_count == 0:
-        logger.info(f"No warm images found for group {group_id}, exiting")
-        DatabaseManager.update_status(group_id , "No Images Found To Process",True , "failed" )
-        DatabaseManager.update_status_history(run_id , "extraction" , "run" , None , None , None , group_id , "error Validation Failed")
-        return False
- 
 
-    logger.info(f"Group {group_id} validated and has images to process")
-    
-    # Step 3: Load models (expensive operation, do once)
-    logger.info("=== STEP 3: LOADING MODELS ===")
-    start_model_load = time.time()
-    
-    logger.info("Loading YOLO model...")
-    yolo_model = YOLO("yolov8x.pt")
-    
-    logger.info("Loading face indexer...")
-    indexer = OptimizedFaceIndexer()
-    
-    model_load_time = time.time() - start_model_load
-    logger.info(f"All models loaded in {model_load_time:.2f}s")
-    
-    # Step 4: Process the group
-    logger.info("=== STEP 4: PROCESSING GROUP ===")
-    
     try:
+        group_id = None        
+        # Step 1: Validate all connections
+        logger.info("=== STEP 1: VALIDATING CONNECTIONS ===")
+        if not ConnectionValidator.validate_all():
+            DatabaseManager.update_status(None , "error Validation Failed",True , "failed" )
+            DatabaseManager.update_status_history(run_id , "extraction" , "run" , None , None , None , None , "error Validation Failed")
+            logger.error("Connection validation failed. Exiting.")
+            return False
+        
+        # Step 2: Check if group exists and has work to do
+        logger.info("=== STEP 2: VALIDATING GROUP ===")
+        group_id = DatabaseManager.get_or_assign_group_id()
+        if not group_id:
+            logger.error(f"Group {group_id} not found or not in 'warm' status")
+            DatabaseManager.update_status(None , "No Group Found To Process",True , "waiting" )
+            DatabaseManager.update_status_history(run_id , "extraction" , "run" , None , None , None , None , "no_group")
+            return False
+        DatabaseManager.update_status(group_id , "Running",False , "healthy" )
+        DatabaseManager.update_status_history(run_id , "extraction" , "run" , None , None , None , group_id , "started")
+        # Check if there are images to process
+        unprocessed_count = len(DatabaseManager.fetch_unprocessed_images(group_id, 1))
+        if unprocessed_count == 0:
+            logger.info(f"No warm images found for group {group_id}, exiting")
+            DatabaseManager.update_status(group_id , "No Images Found To Process",True , "failed" )
+            DatabaseManager.update_status_history(run_id , "extraction" , "run" , None , None , None , group_id , "error Validation Failed")
+            return False
+    
+
+        logger.info(f"Group {group_id} validated and has images to process")
+        
+        # Step 3: Load models (expensive operation, do once)
+        logger.info("=== STEP 3: LOADING MODELS ===")
+        start_model_load = time.time()
+        
+        logger.info("Loading YOLO model...")
+        yolo_model = YOLO("yolov8x.pt")
+        
+        logger.info("Loading face indexer...")
+        indexer = OptimizedFaceIndexer()
+        
+        model_load_time = time.time() - start_model_load
+        logger.info(f"All models loaded in {model_load_time:.2f}s")
+        
+        # Step 4: Process the group
+        logger.info("=== STEP 4: PROCESSING GROUP ===")
+        
         group_start = time.time()
         
         # Process the group
@@ -1281,24 +1298,24 @@ def main_with_monitoring():
     
     total_start = time.time()
     
-    try:
-        success = main_optimized()
-        total_time = time.time() - total_start
+    # try:
+    success = main_optimized()
+    total_time = time.time() - total_start
+    
+    if success:
+        logger.info(f"Processing completed successfully for group in {total_time:.2f}s")
+    else:
+        logger.error(f"[WARNING] Processing failed for group after {total_time:.2f}s")
         
-        if success:
-            logger.info(f"Processing completed successfully for group in {total_time:.2f}s")
-        else:
-            logger.error(f"[WARNING] Processing failed for group after {total_time:.2f}s")
-            
-        return success
+    return success
         
-    except KeyboardInterrupt:
-        logger.info("Process interrupted by user")
-        return False
-    except Exception as e:
-        total_time = time.time() - total_start
-        logger.error(f"Critical error after {total_time:.2f}s: {e}")
-        return False
+    # except KeyboardInterrupt:
+    #     logger.info("Process interrupted by user")
+    #     return False
+    # except Exception as e:
+    #     total_time = time.time() - total_start
+    #     logger.error(f"Critical error after {total_time:.2f}s: {e}")
+    #     return False
 
 if __name__ == "__main__":
     success = main_with_monitoring()

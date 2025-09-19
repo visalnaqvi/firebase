@@ -214,14 +214,38 @@ async function processSingleImage(image, planType) {
         const sharpMeta = await sharp(originalBuffer).metadata();
         const originalWidth = sharpMeta.width;
         console.log(`📏 Image ${id} original width: ${originalWidth} px`);
+        const originalFormat = sharpMeta.format;
 
-        const parser = exifParser.create(originalBuffer);
-        const result = parser.parse();
-        const originalMeta = result.tags
-        const artist = originalMeta.Artist || originalMeta.artist || null;
-        const dateTaken = originalMeta.DateTimeOriginal
-            ? new Date(originalMeta.DateTimeOriginal * 1000) // exif-parser gives seconds since epoch
-            : null;
+        console.log(`📏 Image ${id} - Format: ${originalFormat}, Width: ${originalWidth}px`);
+
+        // Handle EXIF data (only works for JPEG images)
+        let artist = null;
+        let dateTaken = null;
+
+        if (originalFormat === 'jpeg' || originalFormat === 'jpg') {
+            try {
+                const parser = exifParser.create(originalBuffer);
+                const result = parser.parse();
+                const originalMeta = result.tags;
+                artist = originalMeta.Artist || originalMeta.artist || null;
+                dateTaken = originalMeta.DateTimeOriginal
+                    ? new Date(originalMeta.DateTimeOriginal * 1000)
+                    : null;
+                console.log(`📏 Image ${id} EXIF - Artist: ${artist}, Date taken: ${dateTaken}`);
+            } catch (exifError) {
+                console.warn(`⚠️ Could not parse EXIF data for image ${id}: ${exifError.message}`);
+                // Continue processing without EXIF data
+            }
+        } else {
+            console.log(`📏 Image ${id} - Non-JPEG format, skipping EXIF extraction`);
+        }
+        // const parser = exifParser.create(originalBuffer);
+        // const result = parser.parse();
+        // const originalMeta = result.tags
+        // const artist = originalMeta.Artist || originalMeta.artist || null;
+        // const dateTaken = originalMeta.DateTimeOriginal
+        // ? new Date(originalMeta.DateTimeOriginal * 1000) // exif-parser gives seconds since epoch
+        // : null;
         console.log(`📏 Image ${id} original Artist: ${artist}`);
         console.log(`📏 Image ${id} date taken dateTaken: ${dateTaken}`);
 

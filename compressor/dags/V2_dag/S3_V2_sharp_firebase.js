@@ -559,7 +559,7 @@ async function performBatchInsert(client, successfulResults) {
             const { data } = result;
 
             valuesClauses.push(
-                `($${paramIndex}::uuid, $${paramIndex + 1}, $${paramIndex + 2}, $${paramIndex + 3}, $${paramIndex + 4}::timestamp, $${paramIndex + 5}, $${paramIndex + 6}::jsonb, $${paramIndex + 7}::bytea, $${paramIndex + 8}::bytea, $${paramIndex + 9}, $${paramIndex + 10}, $${paramIndex + 11}::timestamp, $${paramIndex + 12}, $${paramIndex + 13}, $${paramIndex + 14} , $${paramIndex + 15} , $${paramIndex + 16}::timestamp)`
+                `($${paramIndex}::uuid, $${paramIndex + 1}, $${paramIndex + 2}, $${paramIndex + 3}, $${paramIndex + 4}::timestamp, $${paramIndex + 5}, $${paramIndex + 6}::jsonb, $${paramIndex + 7}::bytea, $${paramIndex + 8}::bytea, $${paramIndex + 9}, $${paramIndex + 10}, $${paramIndex + 11}::timestamp, $${paramIndex + 12}, $${paramIndex + 13}, $${paramIndex + 14} , $${paramIndex + 15} , NOW())`
             );
 
             allParams.push(
@@ -578,11 +578,10 @@ async function performBatchInsert(client, successfulResults) {
                 data.location,
                 data.signedUrl,
                 data.signedUrl3k,
-                data.signedUrlStripped,
-                new Date()
+                data.signedUrlStripped
             );
 
-            paramIndex += 17;
+            paramIndex += 16;
         }
 
         const batchInsertQuery = `
@@ -597,7 +596,7 @@ async function performBatchInsert(client, successfulResults) {
             compressed_location = EXCLUDED.compressed_location,
             artist = EXCLUDED.artist,
             date_taken = EXCLUDED.date_taken,
-            last_processed_at = (NOW() AT TIME ZONE 'utc'),
+            last_processed_at = NOW(),
             location = EXCLUDED.location,
             signed_url = EXCLUDED.signed_url,
             signed_url_3k = EXCLUDED.signed_url_3k,
@@ -660,7 +659,7 @@ async function performChunkedInserts(client, successfulResults) {
                     const insertResult = await client.query(
                         `INSERT INTO images
                          (id, group_id, created_by_user, filename, uploaded_at, status, json_meta_data, thumb_byte, image_byte, compressed_location, artist, date_taken, location, signed_url, signed_url_3k, signed_url_stripped , last_processed_at)
-                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15 , $16 ,(NOW() AT TIME ZONE 'utc'))
+                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15 , $16 ,NOW())
                          ON CONFLICT (id) DO UPDATE SET
                             status = EXCLUDED.status,
                             json_meta_data = EXCLUDED.json_meta_data,
@@ -669,7 +668,7 @@ async function performChunkedInserts(client, successfulResults) {
                             compressed_location = EXCLUDED.compressed_location,
                             artist = EXCLUDED.artist,
                             date_taken = EXCLUDED.date_taken,
-                            last_processed_at = (NOW() AT TIME ZONE 'utc'),
+                            last_processed_at = NOW(),
                             location = EXCLUDED.location,
                             signed_url = EXCLUDED.signed_url,
                             signed_url_3k = EXCLUDED.signed_url_3k,
@@ -727,6 +726,7 @@ async function insertIntoDatabaseBatch(client, results, run_id) {
     try {
         console.log(`🔃 Attempting single batch INSERT query...`);
         await client.query('BEGIN');
+        // const batchInsertResponse = await performChunkedInserts(client, successfulResults);
         const batchInsertResponse = await performBatchInsert(client, successfulResults);
         await client.query('COMMIT');
 

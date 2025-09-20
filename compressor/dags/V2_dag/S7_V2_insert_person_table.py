@@ -476,7 +476,7 @@ def sync_single_group(group_id):
         
         if not faces_data:
             print(f"[WARNING] No faces data found for group {group_id}")
-            return
+            return False
 
         # Bulk insert faces into database
         print(f"Inserting faces into database...")
@@ -497,11 +497,13 @@ def sync_single_group(group_id):
         update_status(None , "" , True , "done")
         update_status_history(run_id , "insertion" , "group" , None , None  , None , group_id , "done")
         update_last_provrssed_group_column(group_id)
+        return True
     except Exception as e:
         print(f"[WARNING] Error in sync_single_group: {e}")
         conn.rollback()
         update_status(group_id , f"Error while trying insertion : {e}" , True , "failed")
         update_status_history(run_id , "insertion" , "group" , None , None  , None , group_id , f"error while trying insertion : {e}")
+        return False
     finally:
         conn.close()
 

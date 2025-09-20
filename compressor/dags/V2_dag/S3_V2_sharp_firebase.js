@@ -10,17 +10,17 @@ const fs = require("fs").promises
 admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
     // DEV BUCKET
-    storageBucket: 'gallery-585ee.firebasestorage.app',
+    // storageBucket: 'gallery-585ee.firebasestorage.app',
     // PROD BUCKET
-    // storageBucket: 'gallery-585ee-production',
+    storageBucket: 'gallery-585ee-production',
 });
 const bucket = admin.storage().bucket();
 
 const pool = new Pool({
     // PROD DATABASE
-    // connectionString: "postgresql://postgres:kdVrNTrtLzzAaOXzKHaJCzhmoHnSDKDG@nozomi.proxy.rlwy.net:24794/railway"
+    connectionString: "postgresql://postgres:kdVrNTrtLzzAaOXzKHaJCzhmoHnSDKDG@nozomi.proxy.rlwy.net:24794/railway"
     // DEV DATABASE
-    connectionString: "postgresql://postgres:AfldldzckDWtkskkAMEhMaDXnMqknaPY@ballast.proxy.rlwy.net:56193/railway"
+    // connectionString: "postgresql://postgres:AfldldzckDWtkskkAMEhMaDXnMqknaPY@ballast.proxy.rlwy.net:56193/railway"
     // connectionString: "postgresql://postgres:admin@localhost:5432/postgres"
 });
 class ProcessingError extends Error {

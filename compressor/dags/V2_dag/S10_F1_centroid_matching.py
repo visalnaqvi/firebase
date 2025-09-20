@@ -311,7 +311,7 @@ def main():
         if not group_id:
             update_status(None , "no group to process" , True , "waiting")
             update_status_history(run_id , "centroid_matching" , "run" , None , None , None , None , "no_group")
-
+            return False
         update_status(group_id , "running" , False , "healthy")
         update_status_history(run_id , "centroid_matching" , "run" , None , None , None , group_id , "started")
         qdrant_client = QdrantClient(host="localhost", port=6333)
@@ -336,11 +336,13 @@ def main():
         update_last_provrssed_group_column(group_id)
         logger.info(f"Similarity check completed for group {group_id}")
         logger.info("Similarity check completed")
+        return True
     except Exception as e:
         logger.info(f"Similarity failed for group {group_id}")
         update_status(group_id , f"error while centroid generation {e}" , True , "failed")
         update_status_history(run_id , "centroid_matching" , "run" , None , None , None , group_id , f"error {e}")
-
+        return False
 
 if __name__ == "__main__":
-    main()
+    success = main()
+    exit(0 if success else 1)

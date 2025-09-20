@@ -344,6 +344,7 @@ def main():
         if not group_id:
             update_status(None , "no group to process" , True , "waiting")
             update_status_history(run_id , "centroid_generation" , "run" , None , None , None , None , "no_group")
+            return False
         update_status(group_id , "running" , False , "healthy")
         update_status_history(run_id , "centroid_generation" , "run" , None , None , None , group_id , "started")
 
@@ -353,12 +354,13 @@ def main():
         update_status(None , "done" , True , "done")
         update_status_history(run_id , "centroid_generation" , "run" , None , None , None , group_id , "done")
         update_last_provrssed_group_column(group_id)
+        return True
     except Exception as e:
         update_status(group_id , f"error while centroid generation {e}" , True , "failed")
         update_status_history(run_id , "centroid_generation" , "run" , None , None , None , group_id , f"error {e}")
 
         logging.info(f"failed group {group_id}")
-        
+        return False
 
 
 if __name__ == "__main__":

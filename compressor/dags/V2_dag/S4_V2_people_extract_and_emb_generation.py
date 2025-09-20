@@ -416,7 +416,7 @@ class DatabaseManager:
                     cur.execute(
                         """
                         UPDATE process_status
-                        SET next_group_in_queue = %s
+                        SET next_group_in_queue = %s , status = 'starting'
                         WHERE task = 'quality_assignment' and next_group_in_queue is null  
                         """,
                         (group_id,)

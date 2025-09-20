@@ -186,7 +186,7 @@ def update_last_provrssed_group_column(group_id):
                     cur.execute(
                         """
                         UPDATE process_status
-                        SET last_group_processed = %s
+                        SET last_group_processed = %s, status = 'starting'
                         WHERE task = 'master' and next_group_in_queue is null 
                         """,
                         (group_id,)

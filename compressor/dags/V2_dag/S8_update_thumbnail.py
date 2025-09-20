@@ -186,7 +186,7 @@ def update_last_provrssed_group_column(group_id):
                     cur.execute(
                         """
                         UPDATE process_status
-                        SET next_group_in_queue = %s
+                        SET next_group_in_queue = %s, status = 'starting'
                         WHERE task = 'centroid_generation' and next_group_in_queue is null 
                         """,
                         (group_id,)
@@ -215,7 +215,7 @@ def get_db_connection():
 
         
 # -------------------- Main Script --------------------
-def process_group(group_id: int):
+def process_group(group_id: int, batch_size: int = 50):
     
     try:
         base_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "warm-images", str(group_id), "faces")
@@ -232,33 +232,53 @@ def process_group(group_id: int):
 
                 logger.info(f"Found {len(rows)} records for group {group_id}")
 
-                for person_id, face_id in rows:
+                # Process in batches
+                batch_data = []
+                processed_count = 0
+                failed_count = 0
+                
+                for i, (person_id, face_id) in enumerate(rows):
                     image_path = os.path.join(base_path, f"{face_id}.jpg")
 
                     if not os.path.exists(image_path):
                         logger.error(f"Image not found: {image_path} (person_id={person_id})")
-                        raise ProcessingError(f"Image not found: {image_path} (person_id={person_id})")
+                        failed_count += 1
+                        continue
 
                     try:
                         with open(image_path, "rb") as f:
                             image_bytes = f.read()
 
-                        cur.execute(
-                            """
-                            UPDATE persons
-                            SET thumbnail = %s
-                            WHERE id = %s
-                            """,
-                            (psycopg2.Binary(image_bytes), person_id)
-                        )
-                        logger.info(f"Updated thumbnail for person_id={person_id}, face_id={face_id}")
+                        batch_data.append((psycopg2.Binary(image_bytes), person_id))
+                        
+                        # Process batch when it reaches batch_size or at the end
+                        if len(batch_data) == batch_size or i == len(rows) - 1:
+                            # Execute batch update
+                            cur.executemany(
+                                """
+                                UPDATE persons
+                                SET thumbnail = %s, updated_at = NOW()
+                                WHERE id = %s
+                                """,
+                                batch_data
+                            )
+                            
+                            processed_count += len(batch_data)
+                            logger.info(f"Batch updated {len(batch_data)} thumbnails (total processed: {processed_count})")
+                            
+                            # Clear batch for next iteration
+                            batch_data = []
 
                     except Exception as e:
-                        logger.error(f"Failed to update person_id={person_id}, face_id={face_id}: {e}")
-                        raise
+                        logger.error(f"Failed to process person_id={person_id}, face_id={face_id}: {e}")
+                        failed_count += 1
 
                 conn.commit()
-                logger.info(f" Completed processing group {group_id}")
+                logger.info(f"Completed processing group {group_id}. Processed: {processed_count}, Failed: {failed_count}")
+                
+                if failed_count > 0:
+                    logger.warning(f"Some images failed to process: {failed_count} out of {len(rows)}")
+                    
     except Exception as e:
         raise
 def main():

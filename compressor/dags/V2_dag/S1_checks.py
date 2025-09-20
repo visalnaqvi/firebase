@@ -146,16 +146,37 @@ TABLES = [
     # Trigger function to send notification
     """
     CREATE TABLE IF NOT EXISTS process_status (
-    id SERIEAL PRIMARY KEY,
-    running TEXT,
-    group_id INT,
-    status TEXT,
-    started_at TIMESTAMPTZ
+    id SERIAL PRIMARY KEY,
+    worker_id INT,
+    worker_nick_name TEXT,
+    worker_status TEXT,
+    task TEXT,
+    task_status TEXT,
+    processing_group INT,
+    next_group_in_queue INT,
+    last_group_processed INT,
+    fail_reason TEXT,
+    started_at TIMESTAMPTZ,
+    ended_at TIMESTAMPTZ,
+    is_ideal BOOLEAN,
+    type TEXT,
+    frequency TEXT
 );
     """,
     """
-    INSERT INTO process_status (group_id, status)
-VALUES (NULL, 'extraction');
+    CREATE TABLE IF NOT EXISTS process_history (
+    id SERIAL PRIMARY KEY,
+    worker_id INT,
+    task TEXT,
+    initialized_count INT,
+    success_count INT,
+    failed_count INT,
+    group_id INT,
+    ended_at TIMESTAMPTZ,
+    fail_reason TEXT,
+    run_id BIGINT,
+    sub_task TEXT
+);
     """,
     """
     
@@ -169,6 +190,7 @@ CREATE TABLE IF NOT EXISTS albums (
     """
     
 CREATE TABLE IF NOT EXISTS album_images (
+     id SERIAL PRIMARY KEY,
     album_id INT ,
     image_id text,
    group_id INT 

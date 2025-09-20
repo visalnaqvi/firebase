@@ -246,7 +246,7 @@ def process_group(group_id: int):
                         cur.execute(
                             """
                             UPDATE persons
-                            SET thumbnail = %s, updated_at = NOW()
+                            SET thumbnail = %s
                             WHERE id = %s
                             """,
                             (psycopg2.Binary(image_bytes), person_id)
@@ -255,6 +255,7 @@ def process_group(group_id: int):
 
                     except Exception as e:
                         logger.error(f"Failed to update person_id={person_id}, face_id={face_id}: {e}")
+                        raise
 
                 conn.commit()
                 logger.info(f" Completed processing group {group_id}")

@@ -2,8 +2,8 @@
 set -e  # Exit immediately if any command fails
 
 # Activate virtual environment (Git Bash style)
-source /c/Users/visal.naqvi/Desktop/DB-Data-backup/mywork-space/firebase/compressor/venv/Scripts/activate
-
+source /c/Users/ayatm/OneDrive/Desktop/visal/firebase/compressor/venv_fixed/Scripts/activate
+# C:\Users\ayatm\OneDrive\Desktop\visal\firebase\compressor\venv_fixed
 # Infinite loop
 while true; do
     echo "Assigning next task to extraction..."

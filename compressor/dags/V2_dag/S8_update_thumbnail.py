@@ -186,7 +186,7 @@ def update_last_provrssed_group_column(group_id):
                     cur.execute(
                         """
                         UPDATE process_status
-                        SET next_group_in_queue = %s, status = 'starting'
+                        SET next_group_in_queue = %s, task_status = 'starting'
                         WHERE task = 'centroid_generation' and next_group_in_queue is null 
                         """,
                         (group_id,)
@@ -205,12 +205,19 @@ def update_last_provrssed_group_column(group_id):
                 conn.close()
 # -------------------- DB Connection --------------------
 def get_db_connection():
+    # return psycopg2.connect(
+    #     host="ballast.proxy.rlwy.net",
+    #     port="56193",
+    #     dbname="railway",
+    #     user="postgres",
+    #     password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
+    # )
     return psycopg2.connect(
-        host="ballast.proxy.rlwy.net",
-        port="56193",
+        host="nozomi.proxy.rlwy.net",
+        port="24794",
         dbname="railway",
         user="postgres",
-        password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
+        password="kdVrNTrtLzzAaOXzKHaJCzhmoHnSDKDG"
     )
 
         
@@ -257,7 +264,7 @@ def process_group(group_id: int, batch_size: int = 50):
                             cur.executemany(
                                 """
                                 UPDATE persons
-                                SET thumbnail = %s, updated_at = NOW()
+                                SET thumbnail = %s
                                 WHERE id = %s
                                 """,
                                 batch_data
@@ -306,7 +313,7 @@ def main():
         update_last_provrssed_group_column(group_id)
         return True
     except Exception as e:
-        update_status(group_id , f"error occured in thumbnail : {e}" , True , "failed")
+        update_status(None , f"error occured in thumbnail : {e}" , True , "failed")
         update_status_history(run_id , "thumbnail" , "run" , None , None , None , group_id , f"error in thumbnail {e}")
         return False
 if __name__ == "__main__":

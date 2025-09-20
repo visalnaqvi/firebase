@@ -190,7 +190,7 @@ def update_last_provrssed_group_column(group_id):
                     cur.execute(
                         """
                         UPDATE process_status
-                        SET next_group_in_queue = %s, status = 'starting'
+                        SET next_group_in_queue = %s, task_status = 'starting'
                         WHERE task = 'centroid_matching' and next_group_in_queue is null 
                         """,
                         (group_id,)
@@ -208,14 +208,20 @@ def update_last_provrssed_group_column(group_id):
             if conn:
                 conn.close()
 def get_db_connection():
+    # return psycopg2.connect(
+    #      host="ballast.proxy.rlwy.net",
+    #     port="56193",
+    #     dbname="railway",
+    #     user="postgres",
+    #     password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
+    # )
     return psycopg2.connect(
-         host="ballast.proxy.rlwy.net",
-        port="56193",
+        host="nozomi.proxy.rlwy.net",
+        port="24794",
         dbname="railway",
         user="postgres",
-        password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
+        password="kdVrNTrtLzzAaOXzKHaJCzhmoHnSDKDG"
     )
-
         
 
 def get_warmed_groups():

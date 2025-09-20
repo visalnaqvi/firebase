@@ -131,6 +131,7 @@ TABLES = [
     image_ids UUID[] ,
 	group_id int,
     total_images int,
+    quality_score float,
  face_id uuid 
 );
 """,

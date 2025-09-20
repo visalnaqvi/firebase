@@ -6,12 +6,19 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 
 def update_process_queue():
     try:
+        # conn = psycopg2.connect(
+        #     host="ballast.proxy.rlwy.net",
+        #     port="56193",
+        #     dbname="railway",
+        #     user="postgres",
+        #     password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
+        # )
         conn = psycopg2.connect(
-            host="ballast.proxy.rlwy.net",
-            port="56193",
+            host="nozomi.proxy.rlwy.net",
+            port="24794",
             dbname="railway",
             user="postgres",
-            password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
+            password="kdVrNTrtLzzAaOXzKHaJCzhmoHnSDKDG"
         )
         cur = conn.cursor(cursor_factory=DictCursor)
 
@@ -85,10 +92,10 @@ def update_process_queue():
         cur.close()
         conn.close()
         logging.info("Process queue update committed successfully.")
-
+        return True
     except Exception as e:
         logging.error(f"Error updating process queue: {e}", exc_info=True)
-
+        return False
 
 if __name__ == "__main__":
     success = update_process_queue()

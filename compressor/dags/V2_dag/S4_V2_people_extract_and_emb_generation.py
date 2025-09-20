@@ -114,11 +114,17 @@ class Config:
     QDRANT_PORT: int = int(os.getenv("QDRANT_PORT", "6333"))
     
     # DB Config
-    DB_HOST: str = "ballast.proxy.rlwy.net"
-    DB_PORT: str = "56193"
+    # DB_HOST: str = "ballast.proxy.rlwy.net"
+    # DB_PORT: str = "56193"
+    # DB_NAME: str = "railway"
+    # DB_USER: str = "postgres"
+    # DB_PASSWORD: str = "AfldldzckDWtkskkAMEhMaDXnMqknaPY"
+
+    DB_HOST: str = "nozomi.proxy.rlwy.net"
+    DB_PORT: str = "24794"
     DB_NAME: str = "railway"
     DB_USER: str = "postgres"
-    DB_PASSWORD: str = "AfldldzckDWtkskkAMEhMaDXnMqknaPY"
+    DB_PASSWORD: str = "kdVrNTrtLzzAaOXzKHaJCzhmoHnSDKDG"
 
 config = Config()
 
@@ -143,6 +149,7 @@ class ConnectionValidator:
                 user=config.DB_USER,
                 password=config.DB_PASSWORD
             )
+
             with conn.cursor() as cur:
                 cur.execute("SELECT 1")
                 cur.fetchone()
@@ -1229,7 +1236,7 @@ def main_optimized():
         group_id = DatabaseManager.get_or_assign_group_id()
         if not group_id:
             logger.error(f"Group {group_id} not found or not in 'warm' status")
-            DatabaseManager.update_status(None , "No Group Found To Process",True , "waiting" )
+            DatabaseManager.update_status(None , "No Group Found To Process",True , "failed" )
             DatabaseManager.update_status_history(run_id , "extraction" , "run" , None , None , None , None , "no_group")
             return False
         DatabaseManager.update_status(group_id , "Running",False , "healthy" )

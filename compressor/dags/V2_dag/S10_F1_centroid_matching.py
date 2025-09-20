@@ -186,7 +186,7 @@ def update_last_provrssed_group_column(group_id):
                     cur.execute(
                         """
                         UPDATE process_status
-                        SET last_group_processed = %s, status = 'starting'
+                        SET last_group_processed = %s, task_status = 'starting'
                         WHERE task = 'master' and next_group_in_queue is null 
                         """,
                         (group_id,)
@@ -205,14 +205,20 @@ def update_last_provrssed_group_column(group_id):
                 conn.close()
 # DB connection
 def get_db_connection():
+    # return psycopg2.connect(
+    #      host="ballast.proxy.rlwy.net",
+    #     port="56193",
+    #     dbname="railway",
+    #     user="postgres",
+    #     password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
+    # )
     return psycopg2.connect(
-         host="ballast.proxy.rlwy.net",
-        port="56193",
+        host="nozomi.proxy.rlwy.net",
+        port="24794",
         dbname="railway",
         user="postgres",
-        password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
+        password="kdVrNTrtLzzAaOXzKHaJCzhmoHnSDKDG"
     )
-
 
                     
 # Get distinct person_id, group_id pairs

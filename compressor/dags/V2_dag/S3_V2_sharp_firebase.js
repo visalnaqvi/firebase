@@ -214,14 +214,38 @@ async function processSingleImage(image, planType) {
         const sharpMeta = await sharp(originalBuffer).metadata();
         const originalWidth = sharpMeta.width;
         console.log(`📏 Image ${id} original width: ${originalWidth} px`);
+        const originalFormat = sharpMeta.format;
 
-        const parser = exifParser.create(originalBuffer);
-        const result = parser.parse();
-        const originalMeta = result.tags
-        const artist = originalMeta.Artist || originalMeta.artist || null;
-        const dateTaken = originalMeta.DateTimeOriginal
-            ? new Date(originalMeta.DateTimeOriginal * 1000) // exif-parser gives seconds since epoch
-            : null;
+        console.log(`📏 Image ${id} - Format: ${originalFormat}, Width: ${originalWidth}px`);
+
+        // Handle EXIF data (only works for JPEG images)
+        let artist = null;
+        let dateTaken = null;
+
+        if (originalFormat === 'jpeg' || originalFormat === 'jpg') {
+            try {
+                const parser = exifParser.create(originalBuffer);
+                const result = parser.parse();
+                const originalMeta = result.tags;
+                artist = originalMeta.Artist || originalMeta.artist || null;
+                dateTaken = originalMeta.DateTimeOriginal
+                    ? new Date(originalMeta.DateTimeOriginal * 1000)
+                    : null;
+                console.log(`📏 Image ${id} EXIF - Artist: ${artist}, Date taken: ${dateTaken}`);
+            } catch (exifError) {
+                console.warn(`⚠️ Could not parse EXIF data for image ${id}: ${exifError.message}`);
+                // Continue processing without EXIF data
+            }
+        } else {
+            console.log(`📏 Image ${id} - Non-JPEG format, skipping EXIF extraction`);
+        }
+        // const parser = exifParser.create(originalBuffer);
+        // const result = parser.parse();
+        // const originalMeta = result.tags
+        // const artist = originalMeta.Artist || originalMeta.artist || null;
+        // const dateTaken = originalMeta.DateTimeOriginal
+        // ? new Date(originalMeta.DateTimeOriginal * 1000) // exif-parser gives seconds since epoch
+        // : null;
         console.log(`📏 Image ${id} original Artist: ${artist}`);
         console.log(`📏 Image ${id} date taken dateTaken: ${dateTaken}`);
 
@@ -358,7 +382,8 @@ async function processSingleImage(image, planType) {
                 location: downloadURL,
                 signedUrl: downloadURLCompressed,
                 signedUrl3k: downloadURLCompressed_3k,
-                signedUrlStripped: downloadURLStripped
+                signedUrlStripped: downloadURLStripped,
+                file_size: image.file_size
             }
         };
     } catch (error) {
@@ -380,6 +405,7 @@ async function processSingleImage(image, planType) {
                 compressed_location: null,
                 artist: null,
                 dateCreated: null,
+                file_size: image.file_size
             }
         };
     }
@@ -559,7 +585,7 @@ async function performBatchInsert(client, successfulResults) {
             const { data } = result;
 
             valuesClauses.push(
-                `($${paramIndex}::uuid, $${paramIndex + 1}, $${paramIndex + 2}, $${paramIndex + 3}, $${paramIndex + 4}::timestamp, $${paramIndex + 5}, $${paramIndex + 6}::jsonb, $${paramIndex + 7}::bytea, $${paramIndex + 8}::bytea, $${paramIndex + 9}, $${paramIndex + 10}, $${paramIndex + 11}::timestamp, $${paramIndex + 12}, $${paramIndex + 13}, $${paramIndex + 14} , $${paramIndex + 15} , $${paramIndex + 16}::timestamp)`
+                `($${paramIndex}::uuid, $${paramIndex + 1}, $${paramIndex + 2}, $${paramIndex + 3}, $${paramIndex + 4}::timestamp, $${paramIndex + 5}, $${paramIndex + 6}::jsonb, $${paramIndex + 7}::bytea, $${paramIndex + 8}::bytea, $${paramIndex + 9}, $${paramIndex + 10}, $${paramIndex + 11}::timestamp, $${paramIndex + 12}, $${paramIndex + 13}, $${paramIndex + 14} , $${paramIndex + 15}, $${paramIndex + 16} , NOW())`
             );
 
             allParams.push(
@@ -579,7 +605,7 @@ async function performBatchInsert(client, successfulResults) {
                 data.signedUrl,
                 data.signedUrl3k,
                 data.signedUrlStripped,
-                new Date()
+                data.file_size
             );
 
             paramIndex += 17;
@@ -587,7 +613,7 @@ async function performBatchInsert(client, successfulResults) {
 
         const batchInsertQuery = `
         INSERT INTO images 
-        (id, group_id, created_by_user, filename, uploaded_at, status, json_meta_data, thumb_byte, image_byte, compressed_location, artist, date_taken, location, signed_url, signed_url_3k , signed_url_stripped ,last_processed_at)
+        (id, group_id, created_by_user, filename, uploaded_at, status, json_meta_data, thumb_byte, image_byte, compressed_location, artist, date_taken, location, signed_url, signed_url_3k , signed_url_stripped ,size, last_processed_at)
         VALUES ${valuesClauses.join(', ')}
         ON CONFLICT (id) DO UPDATE SET
             status = EXCLUDED.status,
@@ -597,11 +623,12 @@ async function performBatchInsert(client, successfulResults) {
             compressed_location = EXCLUDED.compressed_location,
             artist = EXCLUDED.artist,
             date_taken = EXCLUDED.date_taken,
-            last_processed_at = (NOW() AT TIME ZONE 'utc'),
+            last_processed_at = NOW(),
             location = EXCLUDED.location,
             signed_url = EXCLUDED.signed_url,
             signed_url_3k = EXCLUDED.signed_url_3k,
-            signed_url_stripped = EXCLUDED.signed_url_stripped
+            signed_url_stripped = EXCLUDED.signed_url_stripped,
+            size = EXCLUDED.size
     `;
 
         console.log(`🔃 Executing batch insert query with ${allParams.length} parameters...`);
@@ -660,7 +687,7 @@ async function performChunkedInserts(client, successfulResults) {
                     const insertResult = await client.query(
                         `INSERT INTO images
                          (id, group_id, created_by_user, filename, uploaded_at, status, json_meta_data, thumb_byte, image_byte, compressed_location, artist, date_taken, location, signed_url, signed_url_3k, signed_url_stripped , last_processed_at)
-                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15 , $16 ,(NOW() AT TIME ZONE 'utc'))
+                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15 , $16 ,NOW())
                          ON CONFLICT (id) DO UPDATE SET
                             status = EXCLUDED.status,
                             json_meta_data = EXCLUDED.json_meta_data,
@@ -669,7 +696,7 @@ async function performChunkedInserts(client, successfulResults) {
                             compressed_location = EXCLUDED.compressed_location,
                             artist = EXCLUDED.artist,
                             date_taken = EXCLUDED.date_taken,
-                            last_processed_at = (NOW() AT TIME ZONE 'utc'),
+                            last_processed_at = NOW(),
                             location = EXCLUDED.location,
                             signed_url = EXCLUDED.signed_url,
                             signed_url_3k = EXCLUDED.signed_url_3k,
@@ -727,6 +754,7 @@ async function insertIntoDatabaseBatch(client, results, run_id) {
     try {
         console.log(`🔃 Attempting single batch INSERT query...`);
         await client.query('BEGIN');
+        // const batchInsertResponse = await performChunkedInserts(client, successfulResults);
         const batchInsertResponse = await performBatchInsert(client, successfulResults);
         await client.query('COMMIT');
 

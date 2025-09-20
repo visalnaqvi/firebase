@@ -404,7 +404,7 @@ class SimplifiedFaceGrouping:
                     "cloth_ids": cloth_ids_set
                 }
 
-                if candidate.score >= 0.7:
+                if candidate.score >= 0.6:
                     face_matches.append(match_data)
                 else:
                     face_matches_less.append(match_data)

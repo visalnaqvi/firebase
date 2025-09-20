@@ -186,7 +186,7 @@ def update_last_provrssed_group_column(group_id):
                     cur.execute(
                         """
                         UPDATE process_status
-                        SET next_group_in_queue = %s
+                        SET last_group_processed = %s
                         WHERE task = 'master' and next_group_in_queue is null 
                         """,
                         (group_id,)
@@ -325,7 +325,7 @@ def main():
                 logger.warning(f"No vector found for person_id={person_id} in group_id={group_id}")
                 continue
 
-            similar_ids = find_similar(qdrant_client, collection_name, vector, person_id, threshold=0.5)
+            similar_ids = find_similar(qdrant_client, collection_name, vector, person_id, threshold=0.3)
             for sim_id in similar_ids:
                 all_pairs.append((person_id, sim_id,group_id ))
 

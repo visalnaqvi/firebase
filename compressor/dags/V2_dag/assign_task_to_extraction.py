@@ -27,7 +27,7 @@ def update_process_queue():
 
         if not warm_groups:
             logging.info("No warm groups found, nothing to update.")
-            return
+            return False
 
         group1 = warm_groups[0] if len(warm_groups) > 0 else None
         group2 = warm_groups[1] if len(warm_groups) > 1 else None
@@ -42,7 +42,7 @@ def update_process_queue():
         row = cur.fetchone()
         if not row:
             logging.info("No extraction task found in process_status.")
-            return
+            return False
 
         process_id = row["id"]
         processing_group = row["processing_group"]
@@ -91,4 +91,5 @@ def update_process_queue():
 
 
 if __name__ == "__main__":
-    update_process_queue()
+    success = update_process_queue()
+    exit(0 if success else 1)

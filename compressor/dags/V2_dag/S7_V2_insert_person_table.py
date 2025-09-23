@@ -181,7 +181,7 @@ def update_last_provrssed_group_column(group_id):
                     cur.execute(
                         """
                         UPDATE process_status
-                        SET next_group_in_queue = %s, status = 'starting'
+                        SET next_group_in_queue = %s, task_status = 'starting'
                         WHERE task = 'thumbnail' and next_group_in_queue is null 
                         """,
                         (group_id,)
@@ -199,13 +199,20 @@ def update_last_provrssed_group_column(group_id):
             if conn:
                 conn.close()
 def get_db_connection():
+    # return psycopg2.connect(
+    #     host="ballast.proxy.rlwy.net",
+    #     port="56193",
+    #     dbname="railway",
+    #     user="postgres",
+    #     password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
+    # )
     return psycopg2.connect(
-        host="ballast.proxy.rlwy.net",
-        port="56193",
+        host="nozomi.proxy.rlwy.net",
+        port="24794",
         dbname="railway",
         user="postgres",
-        password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
-    )
+        password="kdVrNTrtLzzAaOXzKHaJCzhmoHnSDKDG"
+    )    
     
 def check_group_exists(group_id: int) -> bool:
     """Check if group exists and has warm status"""
@@ -476,7 +483,7 @@ def sync_single_group(group_id):
         
         if not faces_data:
             print(f"[WARNING] No faces data found for group {group_id}")
-            return
+            return False
 
         # Bulk insert faces into database
         print(f"Inserting faces into database...")
@@ -497,11 +504,13 @@ def sync_single_group(group_id):
         update_status(None , "" , True , "done")
         update_status_history(run_id , "insertion" , "group" , None , None  , None , group_id , "done")
         update_last_provrssed_group_column(group_id)
+        return True
     except Exception as e:
         print(f"[WARNING] Error in sync_single_group: {e}")
         conn.rollback()
         update_status(group_id , f"Error while trying insertion : {e}" , True , "failed")
         update_status_history(run_id , "insertion" , "group" , None , None  , None , group_id , f"error while trying insertion : {e}")
+        return False
     finally:
         conn.close()
 

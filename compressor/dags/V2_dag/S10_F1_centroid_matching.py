@@ -186,7 +186,7 @@ def update_last_provrssed_group_column(group_id):
                     cur.execute(
                         """
                         UPDATE process_status
-                        SET last_group_processed = %s, status = 'starting'
+                        SET last_group_processed = %s, task_status = 'starting'
                         WHERE task = 'master' and next_group_in_queue is null 
                         """,
                         (group_id,)
@@ -205,14 +205,20 @@ def update_last_provrssed_group_column(group_id):
                 conn.close()
 # DB connection
 def get_db_connection():
+    # return psycopg2.connect(
+    #      host="ballast.proxy.rlwy.net",
+    #     port="56193",
+    #     dbname="railway",
+    #     user="postgres",
+    #     password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
+    # )
     return psycopg2.connect(
-         host="ballast.proxy.rlwy.net",
-        port="56193",
+        host="nozomi.proxy.rlwy.net",
+        port="24794",
         dbname="railway",
         user="postgres",
-        password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
+        password="kdVrNTrtLzzAaOXzKHaJCzhmoHnSDKDG"
     )
-
 
                     
 # Get distinct person_id, group_id pairs
@@ -311,7 +317,7 @@ def main():
         if not group_id:
             update_status(None , "no group to process" , True , "waiting")
             update_status_history(run_id , "centroid_matching" , "run" , None , None , None , None , "no_group")
-
+            return False
         update_status(group_id , "running" , False , "healthy")
         update_status_history(run_id , "centroid_matching" , "run" , None , None , None , group_id , "started")
         qdrant_client = QdrantClient(host="localhost", port=6333)
@@ -336,11 +342,13 @@ def main():
         update_last_provrssed_group_column(group_id)
         logger.info(f"Similarity check completed for group {group_id}")
         logger.info("Similarity check completed")
+        return True
     except Exception as e:
         logger.info(f"Similarity failed for group {group_id}")
         update_status(group_id , f"error while centroid generation {e}" , True , "failed")
         update_status_history(run_id , "centroid_matching" , "run" , None , None , None , group_id , f"error {e}")
-
+        return False
 
 if __name__ == "__main__":
-    main()
+    success = main()
+    exit(0 if success else 1)

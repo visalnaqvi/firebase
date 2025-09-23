@@ -3,12 +3,19 @@ from psycopg2.extras import DictCursor
 from datetime import datetime, timedelta
 
 def update_groups_to_warm():
+    # conn = psycopg2.connect(
+    #    host="ballast.proxy.rlwy.net",
+    #         port="56193",
+    #         dbname="railway",
+    #         user="postgres",
+    #         password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
+    # )
     conn = psycopg2.connect(
-       host="ballast.proxy.rlwy.net",
-            port="56193",
-            dbname="railway",
-            user="postgres",
-            password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
+        host="nozomi.proxy.rlwy.net",
+        port="24794",
+        dbname="railway",
+        user="postgres",
+        password="kdVrNTrtLzzAaOXzKHaJCzhmoHnSDKDG"
     )
     conn.autocommit = True
     cur = conn.cursor(cursor_factory=DictCursor)

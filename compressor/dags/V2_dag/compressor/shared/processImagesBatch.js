@@ -3,42 +3,29 @@ const sharp = require('sharp');
 const exifParser = require('exif-parser');
 const fs = require('fs').promises;
 const path = require('path');
-async function downloadFileFromDrive(accessToken, fileId) {
+
+
+async function downloadFileFromDrive(drive, fileId) {
     try {
-        const drive = google.drive({ version: 'v3' });
-        const auth = new google.auth.OAuth2();
-        auth.setCredentials({ access_token: accessToken });
+        const res = await drive.files.get(
+            { fileId, alt: "media" },
+            { responseType: "stream" }
+        );
 
-        const response = await drive.files.get({
-            auth: auth,
-            fileId: fileId,
-            alt: 'media'
-        }, {
-            responseType: 'stream'
-        });
-
-        // Convert stream to buffer
         const chunks = [];
-        for await (const chunk of response.data) {
+        for await (const chunk of res.data) {
             chunks.push(chunk);
         }
 
-        return {
-            success: true,
-            buffer: Buffer.concat(chunks)
-        };
-
+        return { success: true, buffer: Buffer.concat(chunks) };
     } catch (error) {
-        console.error('Error downloading file from Drive:', error);
-        return {
-            success: false,
-            error: error.message
-        };
+        console.error("Error downloading file from Drive:", error.message);
+        return { success: false, error: error.message };
     }
 }
 
-async function processSingleImage(image, planType, bucket, source) {
-    const { id, firebase_path, filename, group_id, created_by_user, uploaded_at, access_token } = image;
+async function processSingleImage(image, planType, bucket, source, drive) {
+    const { id, firebase_path, filename, group_id, created_by_user, uploaded_at } = image;
 
     console.log(`🔃 Processing Image ${id} for group ${group_id}`);
 
@@ -52,7 +39,7 @@ async function processSingleImage(image, planType, bucket, source) {
 
             console.log(`✅ Downloaded Image ${id} from Firebase`);
         } else if (source == "drive") {
-            const downloadResult = await downloadFileFromDrive(access_token, id);
+            const downloadResult = await downloadFileFromDrive(drive, id);
             if (!downloadResult.success) {
                 throw new Error(`Failed to download from Drive: ${downloadResult.error}`);
             }
@@ -247,7 +234,7 @@ async function processSingleImage(image, planType, bucket, source) {
 }
 
 
-async function processImagesBatch(images, planType, parallel_limit, bucket, source) {
+async function processImagesBatch(images, planType, parallel_limit, bucket, source, drive) {
     console.log(`🔃 Processing batch of ${images.length} images with ${parallel_limit} parallel workers`);
 
     const results = [];
@@ -258,7 +245,7 @@ async function processImagesBatch(images, planType, parallel_limit, bucket, sour
         console.log(`🔃 Processing chunk ${Math.floor(i / parallel_limit) + 1} /${Math.ceil(images.length / parallel_limit)
             } (${chunk.length} images)`);
 
-        const chunkPromises = chunk.map((image) => processSingleImage(image, planType, bucket, source));
+        const chunkPromises = chunk.map((image) => processSingleImage(image, planType, bucket, source, drive));
         const chunkResults = await Promise.all(chunkPromises);
         results.push(...chunkResults);
 

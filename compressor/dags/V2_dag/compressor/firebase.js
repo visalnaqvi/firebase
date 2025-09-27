@@ -21,6 +21,7 @@ const bucket = admin.storage().bucket();
 
 const pool = new Pool({
     connectionString: "postgresql://postgres:AfldldzckDWtkskkAMEhMaDXnMqknaPY@ballast.proxy.rlwy.net:56193/railway"
+    // connectionString: "postgresql://postgres:kdVrNTrtLzzAaOXzKHaJCzhmoHnSDKDG@nozomi.proxy.rlwy.net:24794/railway"
 });
 
 class ProcessingError extends Error {
@@ -300,7 +301,7 @@ async function processImagesBatches(client, images, planType, groupId, run_id) {
         const parallelLimit = 10;
 
         // Process this batch
-        const batchResults = await processImagesBatch(batch, planType, parallelLimit, bucket, "firebase");
+        const batchResults = await processImagesBatch(batch, planType, parallelLimit, bucket, "firebase", null);
         allResults.push(...batchResults);
 
         // Insert into database immediately after processing this batch

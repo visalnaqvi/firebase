@@ -1,17 +1,17 @@
 const { Pool } = require('pg');
+const { google } = require('googleapis');
+const admin = require('firebase-admin');
 const { join } = require('path');
 const fs = require('fs').promises;
-const { google } = require('googleapis');
-const { post } = require('axios');
-const admin = require('firebase-admin');
-const serviceAccount = require('../firebase-key.json');
+
+// Import your existing modules
 const getGroupPlanType = require('./shared/getGroupPlanType');
 const processImagesBatch = require('./shared/processImagesBatch');
 const insertIntoDatabaseBatch = require('./shared/insertIntoDatabaseBatch');
 
-const pool = new Pool({
-    connectionString: "postgresql://postgres:AfldldzckDWtkskkAMEhMaDXnMqknaPY@ballast.proxy.rlwy.net:56193/railway"
-});
+// Firebase setup (using same config as your Firebase script)
+const serviceAccount = require('../firebase-key.json');
+
 admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
     // DEV BUCKET
@@ -20,6 +20,29 @@ admin.initializeApp({
     // storageBucket: 'gallery-585ee-production',
 });
 const bucket = admin.storage().bucket();
+
+// Database connection
+const pool = new Pool({
+    connectionString: "postgresql://postgres:AfldldzckDWtkskkAMEhMaDXnMqknaPY@ballast.proxy.rlwy.net:56193/railway"
+    // connectionString: "postgresql://postgres:kdVrNTrtLzzAaOXzKHaJCzhmoHnSDKDG@nozomi.proxy.rlwy.net:24794/railway"
+});
+
+// Google Drive setup
+const KEYFILEPATH = "./buttons-2dc4a-866e9e3e7b0a.json";
+const SCOPES = ["https://www.googleapis.com/auth/drive.readonly"];
+
+const auth = new google.auth.GoogleAuth({
+    keyFile: KEYFILEPATH,
+    scopes: SCOPES,
+});
+
+const drive = google.drive({ version: "v3", auth });
+
+// Configuration
+const BATCH_SIZE = 10;
+const PARALLEL_LIMIT = 10;
+const FOLDER_BATCH_SIZE = 5;
+
 class ProcessingError extends Error {
     constructor(message, { groupId = null, reason = null, retryable = true } = {}) {
         super(message);
@@ -30,277 +53,311 @@ class ProcessingError extends Error {
     }
 }
 
-// Configuration
-const BATCH_SIZE = 10;
-const PARALLEL_LIMIT = 10;
-const FIREBASE_BATCH_SIZE = 50;
+// Fetch unprocessed folders from database
+async function fetchUnprocessedFolders(client, limit = FOLDER_BATCH_SIZE, offset = 0) {
+    console.log(`🔃 Fetching ${limit} unprocessed folders from database (offset: ${offset})`);
 
-// Google Drive API helper functions
-async function refreshAccessToken(refreshToken, clientId, clientSecret) {
     try {
-        const response = await post('https://oauth2.googleapis.com/token', {
-            refresh_token: refreshToken,
-            client_id: clientId,
-            client_secret: clientSecret,
-            grant_type: 'refresh_token'
-        });
+        const query = `
+            SELECT df.folder_id, df.group_id, df.user_id, df.id   
+            FROM drive_folders df               
+            WHERE df.is_processed = false               
+            ORDER BY df.created_at               
+            LIMIT $1 OFFSET $2
+        `;
+
+        const result = await client.query(query, [limit, offset]);
+
+        console.log(`✅ Found ${result.rows.length} unprocessed folders`);
 
         return {
             success: true,
-            accessToken: response.data.access_token,
-            expiresIn: response.data.expires_in
+            folders: result.rows,
+            hasMore: result.rows.length === limit
         };
-    } catch (error) {
-        console.error('Error refreshing access token:', error.response?.data || error.message);
-        return {
-            success: false,
-            error: error.response?.data?.error || error.message
-        };
-    }
-}
-
-async function getValidAccessToken(client, userId, groupId) {
-    try {
-        const { rows } = await client.query(
-            'SELECT access_token, refresh_token, token_expires_at FROM users WHERE id = $1',
-            [userId]
-        );
-
-        if (rows.length === 0) {
-            throw new Error(`User ${userId} not found`);
-        }
-
-        const { access_token, refresh_token, token_expires_at } = rows[0];
-
-        // Check if access token is still valid (with 5 minute buffer)
-        const now = new Date();
-        const expiresAt = new Date(token_expires_at);
-        const bufferTime = 5 * 60 * 1000; // 5 minutes in milliseconds
-
-        if (expiresAt - now > bufferTime) {
-            return { success: true, accessToken: access_token };
-        }
-
-        // Need to refresh the token
-        console.log(`🔄 Refreshing access token for user ${userId}`);
-        const refreshResult = await refreshAccessToken(
-            refresh_token,
-            id,
-            s
-        );
-
-        if (!refreshResult.success) {
-            throw new Error(`Failed to refresh token: ${refreshResult.error}`);
-        }
-
-        // Update the database with new access token
-        const newExpiresAt = new Date(Date.now() + (refreshResult.expiresIn * 1000));
-        await client.query(
-            'UPDATE users SET access_token = $1, token_expires_at = $2 WHERE id = $3',
-            [refreshResult.accessToken, newExpiresAt, userId]
-        );
-
-        console.log(`✅ Access token refreshed for user ${userId}`);
-        return { success: true, accessToken: refreshResult.accessToken };
-
-    } catch (error) {
-        console.error(`❌ Error getting valid access token for user ${userId}:`, error.message);
-        return { success: false, error: error.message };
-    }
-}
-
-async function listDriveFiles(accessToken, folderId) {
-    try {
-        const drive = google.drive({ version: 'v3' });
-        const auth = new google.auth.OAuth2();
-        auth.setCredentials({ access_token: accessToken });
-
-        const response = await drive.files.list({
-            auth: auth,
-            q: `'${folderId}' in parents and mimeType contains 'image/' and trashed=false`,
-            fields: 'files(id,name,size,mimeType,createdTime,modifiedTime)',
-            pageSize: 1000
-        });
-
-        return {
-            success: true,
-            files: response.data.files
-        };
-
-    } catch (error) {
-        console.error('Error listing Drive files:', error);
-        return {
-            success: false,
-            error: error.message
-        };
-    }
-}
-
-async function fetchUnprocessedFoldersBatch(client, maxResults = FIREBASE_BATCH_SIZE, offset = 0) {
-    console.log(`🔃 Fetching batch of up to ${maxResults} unprocessed folders from drive_folders table`);
-
-    try {
-        const { rows: folders } = await client.query(
-            `SELECT df.folder_id, df.group_id, df.user_id, df.id as drive_folder_id
-             FROM drive_folders df 
-             WHERE df.is_processed = false 
-             ORDER BY df.created_at 
-             LIMIT $1 OFFSET $2`,
-            [maxResults, offset]
-        );
-
-        if (folders.length === 0) {
-            return {
-                success: true,
-                folders: [],
-                hasMore: false
-            };
-        }
-
-        console.log(`✅ Retrieved ${folders.length} unprocessed folders`);
-
-        const processedFolders = [];
-
-        for (const folder of folders) {
-            try {
-                const tokenResult = await getValidAccessToken(client, folder.user_id, folder.group_id);
-                if (!tokenResult.success) {
-                    console.error(`❌ Cannot get access token for user ${folder.user_id}: ${tokenResult.error}`);
-                    continue;
-                }
-
-                const filesResult = await listDriveFiles(tokenResult.accessToken, folder.folder_id);
-                if (!filesResult.success) {
-                    console.error(`❌ Cannot list files in folder ${folder.folder_id}: ${filesResult.error}`);
-                    continue;
-                }
-
-                const images = filesResult.files.map(file => ({
-                    id: file.id,
-                    filename: file.name,
-                    group_id: folder.group_id,
-                    created_by_user: folder.user_id,
-                    file_size: parseInt(file.size) || 0,
-                    content_type: file.mimeType,
-                    uploaded_at: file.createdTime,
-                    folder_id: folder.folder_id,
-                    drive_folder_id: folder.drive_folder_id,
-                    access_token: tokenResult.accessToken,
-                    drive_path: file.id // Use Drive file ID as the path
-                }));
-
-                processedFolders.push({
-                    ...folder,
-                    images: images,
-                    access_token: tokenResult.accessToken
-                });
-
-            } catch (error) {
-                console.error(`❌ Error processing folder ${folder.folder_id}:`, error.message);
-            }
-        }
-
-        const { rows: countRows } = await client.query(
-            'SELECT COUNT(*) as total FROM drive_folders WHERE is_processed = false'
-        );
-        const totalUnprocessed = parseInt(countRows[0].total);
-        const hasMore = (offset + maxResults) < totalUnprocessed;
-
-        return {
-            success: true,
-            folders: processedFolders,
-            hasMore: hasMore
-        };
-
     } catch (error) {
         console.error('❌ Error fetching folders from database:', error.message);
         return {
             success: false,
             error: error.message,
-            errorReason: "Not Able to Fetch Folders from Database",
-            folders: []
+            folders: [],
+            hasMore: false
         };
     }
 }
 
+// List all image files in a Google Drive folder with comprehensive validation
+// List all image files in a Google Drive folder with comprehensive validation and pagination
+async function listImagesInDriveFolder(folderId) {
+    console.log(`🔃 Listing images in Drive folder: ${folderId}`);
 
-async function markFolderAsProcessed(client, driveFolderId) {
     try {
-        await client.query(
-            'UPDATE drive_folders SET is_processed = true, processed_time = NOW() WHERE id = $1',
-            [driveFolderId]
+        // Use broader query to get all files, then filter
+        const query = `'${folderId}' in parents and mimeType contains 'image/' and trashed=false`;
+
+        let allFiles = [];
+        let pageToken = null;
+        let pageCount = 0;
+
+        do {
+            pageCount++;
+            console.log(`📄 Fetching page ${pageCount} of images...`);
+
+            const res = await drive.files.list({
+                q: query,
+                fields: "nextPageToken, files(id, name, mimeType, size, createdTime, modifiedTime)",
+                pageSize: 1000,
+                pageToken: pageToken || undefined
+            });
+
+            const currentPageFiles = res.data.files || [];
+            allFiles = allFiles.concat(currentPageFiles);
+
+            console.log(`📄 Page ${pageCount}: Found ${currentPageFiles.length} files (Total so far: ${allFiles.length})`);
+
+            pageToken = res.data.nextPageToken;
+
+        } while (pageToken);
+
+        console.log(`📁 Total Files Retrieved across ${pageCount} pages: ${allFiles.length}`);
+
+        // Filter out system files and suspicious files
+        const filteredFiles = allFiles.filter(file => {
+            // Skip files with suspicious names
+            const suspiciousNames = [
+                '.DS_Store',
+                'Thumbs.db',
+                'desktop.ini',
+                '.localized',
+                '__MACOSX',
+                '.fseventsd',
+                '.Spotlight-V100',
+                '.Trashes',
+                '.TemporaryItems'
+            ];
+
+            const fileName = file.name.toLowerCase();
+
+            // Check for suspicious file names
+            if (suspiciousNames.some(suspicious => fileName.includes(suspicious.toLowerCase()))) {
+                console.log(`🚫 Skipping system file: ${file.name}`);
+                return false;
+            }
+
+            // Check for valid image extensions
+            const validExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.tiff', '.tif', '.svg'];
+            const hasValidExtension = validExtensions.some(ext => fileName.endsWith(ext));
+
+            if (!hasValidExtension) {
+                console.log(`🚫 Skipping file without image extension: ${file.name}`);
+                return false;
+            }
+
+            // Check for suspicious file sizes (exactly 4096 bytes is often a system file)
+            if (parseInt(file.size) === 4096) {
+                console.log(`🚫 Skipping suspicious 4096-byte file: ${file.name}`);
+                return false;
+            }
+
+            // Skip very small files (likely not real images)
+            if (parseInt(file.size) < 1024) { // Less than 1KB
+                console.log(`🚫 Skipping tiny file: ${file.name} (${file.size} bytes)`);
+                return false;
+            }
+
+            // Check for valid image MIME types more strictly
+            const validMimeTypes = [
+                'image/jpeg',
+                'image/jpg',
+                'image/png',
+                'image/gif',
+                'image/bmp',
+                'image/webp',
+                'image/tiff',
+                'image/svg+xml'
+            ];
+
+            if (!validMimeTypes.includes(file.mimeType.toLowerCase())) {
+                console.log(`🚫 Skipping file with invalid MIME type: ${file.name} (${file.mimeType})`);
+                return false;
+            }
+
+            return true;
+        });
+
+        console.log(`📊 Filtered ${allFiles.length} files down to ${filteredFiles.length} valid images`);
+        console.log(`📊 Processing completed across ${pageCount} pages`);
+
+        return {
+            success: true,
+            files: filteredFiles,
+            totalFound: allFiles.length,
+            validImages: filteredFiles.length,
+            pagesProcessed: pageCount
+        };
+    } catch (error) {
+        console.error(`❌ Error listing files in Drive folder ${folderId}:`, error.message);
+        return {
+            success: false,
+            error: error.message,
+            files: [],
+            totalFound: 0,
+            validImages: 0,
+            pagesProcessed: 0
+        };
+    }
+}
+
+// Convert Drive file metadata to image format for processing
+function convertDriveFileToImageFormat(file, groupId, userId) {
+    return {
+        id: file.id,
+        filename: file.name,
+        group_id: groupId,
+        created_by_user: userId,
+        firebase_path: null, // Not applicable for Drive
+        file_size: parseInt(file.size) || 0,
+        content_type: file.mimeType,
+        uploaded_at: file.createdTime,
+        access_token: null // Not needed with service account
+    };
+}
+
+// Process images from Drive folder
+async function processDriveFolderImages(client, folder, planType, run_id) {
+    const { folder_id: folderId, group_id: groupId, user_id: userId } = folder;
+
+    console.log(`🔃 Processing Drive folder ${folderId} for group ${groupId}`);
+
+    try {
+        // Create local directory for group
+        await fs.mkdir(join(__dirname, "..", "warm-images", `${groupId}`), { recursive: true });
+
+        // List images in the Drive folder
+        const listResult = await listImagesInDriveFolder(folderId);
+
+        if (!listResult.success) {
+            throw new ProcessingError(`Failed to list images in folder: ${listResult.error}`, {
+                groupId: groupId,
+                reason: listResult.error
+            });
+        }
+
+        const driveFiles = listResult.files;
+
+        if (driveFiles.length === 0) {
+            console.log(`⚠️ No images found in Drive folder ${folderId}`);
+            return {
+                totalImagesInsertedIntoDB: [],
+                totalImagesFailedDBInsertion: [],
+                allResults: []
+            };
+        }
+
+        // Convert Drive files to image format
+        const images = driveFiles.map(file =>
+            convertDriveFileToImageFormat(file, groupId, userId)
         );
-        console.log(`✅ Marked folder ${driveFolderId} as processed`);
+
+        console.log(`🔃 Processing ${images.length} images from Drive folder ${folderId}`);
+
+        // Process images in batches
+        let allResults = [];
+        let totalImagesInsertedIntoDB = [];
+        let totalImagesFailedDBInsertion = [];
+
+        for (let i = 0; i < images.length; i += BATCH_SIZE) {
+            const batch = images.slice(i, i + BATCH_SIZE);
+            const batchNumber = Math.floor(i / BATCH_SIZE) + 1;
+            const totalBatches = Math.ceil(images.length / BATCH_SIZE);
+
+            console.log(`🔃 Processing batch ${batchNumber}/${totalBatches} (${batch.length} images)`);
+
+            // Process this batch using your existing function
+            const batchResults = await processImagesBatch(batch, planType, PARALLEL_LIMIT, bucket, "drive", drive);
+            allResults.push(...batchResults);
+
+            // Insert into database
+            console.log(`🔃 Inserting database records for batch ${batchNumber}/${totalBatches}`);
+            const insertionResult = await insertIntoDatabaseBatch(client, batchResults, run_id);
+
+            totalImagesInsertedIntoDB.push(...insertionResult.insertedIds);
+            totalImagesFailedDBInsertion.push(...insertionResult.failedIds);
+            totalImagesFailedDBInsertion.push(...batchResults.filter(r => !r.success));
+
+            if (!insertionResult.success) {
+                throw new ProcessingError("Failed to insert into database", {
+                    groupId: groupId,
+                    reason: "Failed to insert batch into database: " + insertionResult.error
+                });
+            }
+
+            console.log(`✅ Completed batch ${batchNumber}/${totalBatches}`);
+
+            // Brief pause between batches
+            if (batchNumber < totalBatches) {
+                console.log(`⏸️  Brief pause before next batch...`);
+                await new Promise(resolve => setTimeout(resolve, 100));
+            }
+        }
+
+        return {
+            totalImagesInsertedIntoDB,
+            totalImagesFailedDBInsertion,
+            allResults
+        };
+
+    } catch (error) {
+        console.error(`❌ Error processing Drive folder ${folderId}:`, error.message);
+        throw error;
+    }
+}
+
+// Update folder processing status
+async function updateFolderProcessingStatus(client, folderId, isProcessed = true) {
+    console.log(`🔃 Updating folder ${folderId} processing status to: ${isProcessed}`);
+
+    try {
+        const query = `
+            UPDATE drive_folders 
+            SET is_processed = $1, processed_at = CURRENT_TIMESTAMP 
+            WHERE id = $2
+        `;
+
+        await client.query(query, [isProcessed, folderId]);
+        console.log(`✅ Updated folder ${folderId} processing status`);
+
         return { success: true };
     } catch (error) {
-        console.error(`❌ Error marking folder ${driveFolderId} as processed:`, error.message);
+        console.error(`❌ Error updating folder ${folderId} status:`, error.message);
         return { success: false, error: error.message };
     }
 }
 
-async function processImagesBatches(client, images, planType, groupId, run_id) {
-    console.log(`🔃 Processing ${images.length} images in batches of ${BATCH_SIZE}`);
-    let allResults = [];
-    let totalImagesInsertedIntoDB = []
-    let totalImagesFailedDBInsertion = []
-
-    for (let i = 0; i < images.length; i += BATCH_SIZE) {
-        const batch = images.slice(i, i + BATCH_SIZE);
-        const batchNumber = Math.floor(i / BATCH_SIZE) + 1;
-        const totalBatches = Math.ceil(images.length / BATCH_SIZE);
-
-        console.log(`🔃 Processing batch ${batchNumber}/${totalBatches} (${batch.length} images)`);
-
-        const batchResults = await processImagesBatch(batch, planType, PARALLEL_LIMIT, bucket, "drive");
-        allResults.push(...batchResults);
-
-        console.log(`🔃 Inserting database for batch ${batchNumber}/${totalBatches}`);
-        const insertionResult = await insertIntoDatabaseBatch(client, batchResults, run_id);
-
-        totalImagesInsertedIntoDB.push(...insertionResult.insertedIds);
-        totalImagesFailedDBInsertion.push(...insertionResult.failedIds);
-        totalImagesFailedDBInsertion.push(...batchResults.filter(r => !r.success));
-
-        if (!insertionResult.success) {
-            throw new ProcessingError("Failed to do database insert", {
-                reason: "Failed to do database insert : " + insertionResult.error
-            })
-        }
-
-        console.log(`✅ Completed batch ${batchNumber}/${totalBatches}`);
-    }
-
-    return {
-        totalCleaned: 0, // No cleanup needed for Drive
-        totalCleanupFailed: 0,
-        allResults,
-        totalImagesInsertedIntoDB,
-        totalImagesFailedDBInsertion
-    };
-}
-
-// Main processing function for Drive
+// Main processing function for Google Drive
 async function processDriveImages() {
     const client = await pool.connect();
 
     try {
-        console.log("🚗 Starting Drive image processing");
+        console.log("🚗 Starting Google Drive image processing");
 
         let offset = 0;
         let hasMoreFolders = true;
         let totalProcessed = 0;
+        let totalFoldersProcessed = 0;
 
         while (hasMoreFolders) {
-            const resFromFolderFetch = await fetchUnprocessedFoldersBatch(client, FIREBASE_BATCH_SIZE, offset);
+            // Fetch batch of unprocessed folders
+            const foldersResult = await fetchUnprocessedFolders(client, FOLDER_BATCH_SIZE, offset);
 
-            if (!resFromFolderFetch.success) {
-                throw new ProcessingError(resFromFolderFetch.error, {
-                    reason: resFromFolderFetch.errorReason,
-                    retryable: true,
+            if (!foldersResult.success) {
+                throw new ProcessingError(foldersResult.error, {
+                    reason: "Failed to fetch folders from database",
+                    retryable: true
                 });
             }
 
-            const { folders, hasMore } = resFromFolderFetch;
+            const { folders, hasMore } = foldersResult;
 
             if (folders.length === 0) {
                 console.log("⏸️ No more unprocessed folders found");
@@ -309,46 +366,61 @@ async function processDriveImages() {
 
             // Process each folder
             for (const folder of folders) {
-                const { images, group_id, drive_folder_id } = folder;
-
-                if (images.length === 0) {
-                    console.log(`⏸️ No images found in folder ${folder.folder_id} for group ${group_id}`);
-                    await markFolderAsProcessed(client, drive_folder_id);
-                    continue;
-                }
-
-                await fs.mkdir(join(__dirname, "..", "warm-images", `${group_id}`), { recursive: true });
-                console.log(`🔃 Processing ${images.length} images for group ${group_id} from folder ${folder.folder_id}`);
-
-                // Get plan type for this group
-                const planTypesResponse = await getGroupPlanType(client, [group_id]);
-                if (!planTypesResponse.success) continue;
-
-                const planTypeEntry = planTypesResponse.planDetails.find(p => p.groupId == group_id);
-                const planType = planTypeEntry?.planType;
-
-                if (!["lite", "elite", "pro"].includes(planType)) continue;
-
                 try {
-                    const { totalImagesInsertedIntoDB } = await processImagesBatches(client, images, planType, group_id, Date.now());
-                    totalProcessed += totalImagesInsertedIntoDB.length;
+                    console.log(`🔃 Processing folder ${folder.folder_id} for group ${folder.group_id}`);
 
-                    // Mark folder as processed after successful processing
-                    await markFolderAsProcessed(client, drive_folder_id);
+                    // Get plan type for the group
+                    const planTypesResponse = await getGroupPlanType(client, [folder.group_id]);
+                    if (!planTypesResponse.success) {
+                        console.warn(`⚠️ Could not get plan type for group ${folder.group_id}, skipping`);
+                        continue;
+                    }
 
-                    console.log(`✅ Completed processing for group ${group_id}, folder ${folder.folder_id}. Processed: ${totalImagesInsertedIntoDB.length}/${images.length}`);
+                    const planTypeEntry = planTypesResponse.planDetails.find(p => p.groupId == folder.group_id);
+                    const planType = planTypeEntry?.planType;
 
-                } catch (folderError) {
-                    console.error(`❌ Error processing folder ${folder.folder_id}:`, folderError.message);
+                    if (!["lite", "elite", "pro"].includes(planType)) {
+                        console.warn(`⚠️ Invalid plan type '${planType}' for group ${folder.group_id}, skipping`);
+                        continue;
+                    }
+
+                    // Process images in this folder
+                    const run_id = Date.now();
+                    const processingResult = await processDriveFolderImages(client, folder, planType, run_id);
+
+                    totalProcessed += processingResult.totalImagesInsertedIntoDB.length;
+
+                    // Update folder status to processed
+                    const updateResult = await updateFolderProcessingStatus(client, folder.id, true);
+
+                    if (!updateResult.success) {
+                        console.warn(`⚠️ Could not update processing status for folder ${folder.id}: ${updateResult.error}`);
+                    }
+
+                    totalFoldersProcessed++;
+
+                    console.log(`✅ Completed processing folder ${folder.folder_id} - ${processingResult.totalImagesInsertedIntoDB.length} images processed`);
+
+                } catch (error) {
+                    console.error(`❌ Error processing folder ${folder.folder_id}:`, error.message);
+
+                    // Mark folder as failed but don't stop processing other folders
+                    try {
+                        await updateFolderProcessingStatus(client, folder.id, false);
+                    } catch (updateError) {
+                        console.error(`❌ Could not update failed status for folder ${folder.id}:`, updateError.message);
+                    }
+
+                    continue; // Continue with next folder
                 }
             }
 
-            offset += FIREBASE_BATCH_SIZE;
+            offset += FOLDER_BATCH_SIZE;
             hasMoreFolders = hasMore;
         }
 
-        console.log(`🎉 Drive processing completed. Total processed: ${totalProcessed}`);
-        return { success: true, totalProcessed };
+        console.log(`🎉 Drive processing completed. Total folders processed: ${totalFoldersProcessed}, Total images processed: ${totalProcessed}`);
+        return { success: true, totalFoldersProcessed, totalProcessed };
 
     } catch (error) {
         console.error('❌ Drive processing failed:', error);
@@ -364,6 +436,7 @@ if (require.main === module) {
         .then(result => {
             if (result.success) {
                 console.log('✅ Drive processing completed successfully');
+                console.log(`📊 Final stats: ${result.totalFoldersProcessed} folders, ${result.totalProcessed} images`);
                 process.exit(0);
             } else {
                 console.error('❌ Drive processing failed');

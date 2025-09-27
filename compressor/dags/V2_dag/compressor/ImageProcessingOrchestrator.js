@@ -13,6 +13,7 @@ const admin = require("firebase-admin");
 const pool = new Pool({
     // Your database connection
     connectionString: "postgresql://postgres:AfldldzckDWtkskkAMEhMaDXnMqknaPY@ballast.proxy.rlwy.net:56193/railway"
+    // connectionString: "postgresql://postgres:kdVrNTrtLzzAaOXzKHaJCzhmoHnSDKDG@nozomi.proxy.rlwy.net:24794/railway"
 });
 admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),

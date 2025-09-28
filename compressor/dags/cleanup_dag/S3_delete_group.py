@@ -1,6 +1,7 @@
 import psycopg2
 from psycopg2.extras import DictCursor
 from qdrant_client import QdrantClient
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 def cleanup_expired_groups():
     # === Postgres Connection ===
@@ -14,7 +15,7 @@ def cleanup_expired_groups():
     cur = conn.cursor(cursor_factory=DictCursor)
 
     # === Qdrant Connection ===
-    qdrant = QdrantClient("localhost", port=6333)  # 🔹 update if remote Qdrant URL
+    qdrant = QdrantClient("localhost", port=6333)  # 🔹 update if remote
 
     try:
         # 1️⃣ Get expired groups
@@ -33,46 +34,51 @@ def cleanup_expired_groups():
         expired_group_ids = [row["id"] for row in expired_groups]
         print(f"Found {len(expired_group_ids)} expired groups: {expired_group_ids}")
 
-        # 2️⃣ Delete faces
+        # 2️⃣ Delete dependent records in Postgres
         cur.execute("DELETE FROM faces WHERE group_id = ANY(%s);", (expired_group_ids,))
         print(f"🗑️ Deleted {cur.rowcount} faces.")
 
-        # 3️⃣ Delete persons
         cur.execute("DELETE FROM persons WHERE group_id = ANY(%s);", (expired_group_ids,))
         print(f"🗑️ Deleted {cur.rowcount} persons.")
 
-        # 4️⃣ Delete similar_faces
         cur.execute("DELETE FROM similar_faces WHERE group_id = ANY(%s);", (expired_group_ids,))
         print(f"🗑️ Deleted {cur.rowcount} similar_faces.")
 
-        # 5️⃣ Delete from album_images
         cur.execute("DELETE FROM album_images WHERE group_id = ANY(%s);", (expired_group_ids,))
         print(f"🗑️ Deleted {cur.rowcount} album-image links.")
 
-        # 6️⃣ Delete from albums
         cur.execute("DELETE FROM albums WHERE group_id = ANY(%s);", (expired_group_ids,))
         print(f"🗑️ Deleted {cur.rowcount} albums.")
-        
+
         cur.execute("DELETE FROM drive_folders WHERE group_id = ANY(%s);", (expired_group_ids,))
         print(f"🗑️ Deleted {cur.rowcount} drive_folders.")
-        
-        cur.execute("DELETE FROM images WHERE group_id = ANY(%s);", (expired_group_ids,))
-        print(f"🗑️ Deleted {cur.rowcount} album-image links.")
 
-        # 7️⃣ Delete Qdrant collections
-        for gid in expired_group_ids:
+        cur.execute("DELETE FROM images WHERE group_id = ANY(%s);", (expired_group_ids,))
+        print(f"🗑️ Deleted {cur.rowcount} images.")
+
+        # 3️⃣ Parallel delete in Qdrant
+        def delete_collections(gid):
+            results = []
             try:
                 qdrant.delete_collection(str(gid))
-                print(f"🗑️ Deleted Qdrant collection: {gid}")
+                results.append(f"🗑️ Deleted Qdrant collection: {gid}")
             except Exception:
-                print(f"⚠️ Collection {gid} not found in Qdrant.")
+                results.append(f"⚠️ Collection {gid} not found in Qdrant.")
+
             try:
                 qdrant.delete_collection(f"person_centroid_{gid}")
-                print(f"🗑️ Deleted Qdrant collection: person_centroid_{gid}")
+                results.append(f"🗑️ Deleted Qdrant collection: person_centroid_{gid}")
             except Exception:
-                print(f"⚠️ Collection person_centroid_{gid} not found in Qdrant.")
+                results.append(f"⚠️ Collection person_centroid_{gid} not found in Qdrant.")
+            return results
 
-        # 8️⃣ Delete groups
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = [executor.submit(delete_collections, gid) for gid in expired_group_ids]
+            for future in as_completed(futures):
+                for line in future.result():
+                    print(line)
+
+        # 4️⃣ Delete groups
         cur.execute("DELETE FROM groups WHERE id = ANY(%s);", (expired_group_ids,))
         print(f"🗑️ Deleted {cur.rowcount} groups.")
 

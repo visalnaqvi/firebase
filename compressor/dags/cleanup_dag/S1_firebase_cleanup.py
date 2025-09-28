@@ -1,6 +1,7 @@
 import psycopg2
 import firebase_admin
 from firebase_admin import credentials, storage
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 def cleanup():
     # 1. Connect to Postgres
@@ -50,18 +51,26 @@ def cleanup():
         })
     bucket = storage.bucket()
 
-    # 3. Delete all variants for each ID
     prefixes = ["f_", "u_", "compressed_", "thumbnail_", "compressed_3k_", "stripped_", ""]
-    for file_id in ids_to_delete:
-        print(f"🗑️ Deleting files for Image ID: {file_id}")
-        for prefix in prefixes:
-            blob_name = f"{prefix}{file_id}"
-            blob = bucket.blob(blob_name)
-            try:
-                blob.delete()
-                print(f"   ✅ Deleted: {blob_name}")
-            except Exception:
-                print(f"   ⚠️ Skip missing: {blob_name}")
+
+    def delete_blob(file_id, prefix):
+        blob_name = f"{prefix}{file_id}"
+        blob = bucket.blob(blob_name)
+        try:
+            blob.delete()
+            return f"✅ Deleted: {blob_name}"
+        except Exception:
+            return f"⚠️ Skip missing: {blob_name}"
+
+    # 3. Parallel deletion
+    with ThreadPoolExecutor(max_workers=20) as executor:  # adjust workers for your needs
+        futures = []
+        for file_id in ids_to_delete:
+            for prefix in prefixes:
+                futures.append(executor.submit(delete_blob, file_id, prefix))
+
+        for future in as_completed(futures):
+            print(future.result())
 
     cur.close()
     conn.close()

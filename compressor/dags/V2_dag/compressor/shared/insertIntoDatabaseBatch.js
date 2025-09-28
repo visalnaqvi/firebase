@@ -1,4 +1,101 @@
 const updateStatusHistory = require("./updateStatusHistory")
+
+async function updateGroupsTableWithAggregation(client, groupId) {
+    try {
+        console.log(`🔃 Updating group ${groupId} with aggregated values from images table...`);
+
+        // 1. Get aggregated values from images table
+        const aggregationQuery = `
+            SELECT 
+                MAX(uploaded_at) AS latest_uploaded_at,
+                COUNT(*) AS total_images,
+                COALESCE(SUM(size), 0) AS total_size
+            FROM images
+            WHERE group_id = $1
+        `;
+
+        const aggregationResult = await client.query(aggregationQuery, [groupId]);
+        const row = aggregationResult.rows[0];
+
+        const latestUploadedAt = row.latest_uploaded_at;
+        const totalImages = parseInt(row.total_images);
+        const totalSize = parseInt(row.total_size);
+
+        console.log(`📊 Group ${groupId} aggregation results:`, {
+            latestUploadedAt,
+            totalImages,
+            totalSize
+        });
+
+        if (totalImages > 0) {
+            // 2. Update groups table with aggregated values
+            const updateQuery = `
+                UPDATE groups
+                SET last_image_uploaded_at = $1,
+                    total_images = $2,
+                    total_size = $3,
+                    updated_at = NOW()
+                WHERE id = $4
+            `;
+
+            const updateResult = await client.query(updateQuery, [
+                latestUploadedAt,
+                totalImages,
+                totalSize,
+                groupId
+            ]);
+
+            if (updateResult.rowCount > 0) {
+                console.log(`✅ Updated group ${groupId} → last_image_uploaded_at=${latestUploadedAt}, total_images=${totalImages}, total_size=${totalSize}`);
+                return {
+                    success: true,
+                    totalImages,
+                    totalSize,
+                    latestUploadedAt
+                };
+            } else {
+                console.warn(`⚠️ No group found with id ${groupId} to update`);
+                return { success: false, error: `No group found with id ${groupId}` };
+            }
+        } else {
+            console.log(`ℹ️ No images found for group ${groupId}`);
+            return {
+                success: true,
+                totalImages: 0,
+                totalSize: 0,
+                latestUploadedAt: null
+            };
+        }
+    } catch (error) {
+        console.error(`❌ Failed to update groups table with aggregation for group ${groupId}:`, error.message);
+        return { success: false, error: error.message };
+    }
+}
+
+async function updateGroupsTable(client, groupId, insertedCount) {
+    try {
+        const updateQuery = `
+            UPDATE groups 
+            SET total_images = total_images + $1,
+                updated_at = NOW()
+            WHERE id = $2
+        `;
+
+        const result = await client.query(updateQuery, [insertedCount, groupId]);
+
+        if (result.rowCount > 0) {
+            console.log(`✅ Updated groups table: added ${insertedCount} to total_images for group ${groupId}`);
+            return { success: true };
+        } else {
+            console.warn(`⚠️ No group found with id ${groupId} to update`);
+            return { success: false, error: `No group found with id ${groupId}` };
+        }
+    } catch (error) {
+        console.error(`❌ Failed to update groups table for group ${groupId}:`, error.message);
+        return { success: false, error: error.message };
+    }
+}
+
 async function performChunkedInserts(client, successfulResults) {
     const CHUNK_SIZE = 5;
     console.log(`🔃 Using chunked inserts with ${CHUNK_SIZE} records per chunk`);
@@ -48,6 +145,18 @@ async function performChunkedInserts(client, successfulResults) {
 
             console.log(`✅ Inserted chunk ${Math.floor(i / CHUNK_SIZE) + 1} /${Math.ceil(successfulResults.length / CHUNK_SIZE)} (${totalInserted}/${successfulResults.length} total)`);
         }
+
+        // Update groups table with aggregation after successful chunked inserts
+        if (insertedIds.length > 0 && successfulResults.length > 0) {
+            const groupId = successfulResults[0].data.group_id;
+            const groupUpdateResult = await updateGroupsTableWithAggregation(client, groupId);
+
+            if (!groupUpdateResult.success) {
+                console.warn(`⚠️ Failed to update groups table: ${groupUpdateResult.error}`);
+                // Don't fail the entire operation, just log the warning
+            }
+        }
+
         await client.query('COMMIT');
     } catch (error) {
         await client.query('ROLLBACK');
@@ -137,6 +246,17 @@ async function performBatchInsert(client, successfulResults) {
 
         if (insertResult.rowCount !== successfulResults.length) {
             console.warn(`⚠️ Expected to insert ${successfulResults.length} records, but inserted ${insertResult.rowCount}`);
+        }
+
+        // Update groups table with aggregation after successful batch insert
+        if (insertResult.rowCount > 0 && successfulResults.length > 0) {
+            const groupId = successfulResults[0].data.group_id;
+            const groupUpdateResult = await updateGroupsTableWithAggregation(client, groupId);
+
+            if (!groupUpdateResult.success) {
+                console.warn(`⚠️ Failed to update groups table: ${groupUpdateResult.error}`);
+                // Don't fail the entire operation, just log the warning
+            }
         }
 
         return {

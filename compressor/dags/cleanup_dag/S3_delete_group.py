@@ -52,6 +52,12 @@ def cleanup_expired_groups():
         # 6️⃣ Delete from albums
         cur.execute("DELETE FROM albums WHERE group_id = ANY(%s);", (expired_group_ids,))
         print(f"🗑️ Deleted {cur.rowcount} albums.")
+        
+        cur.execute("DELETE FROM drive_folders WHERE group_id = ANY(%s);", (expired_group_ids,))
+        print(f"🗑️ Deleted {cur.rowcount} drive_folders.")
+        
+        cur.execute("DELETE FROM images WHERE group_id = ANY(%s);", (expired_group_ids,))
+        print(f"🗑️ Deleted {cur.rowcount} album-image links.")
 
         # 7️⃣ Delete Qdrant collections
         for gid in expired_group_ids:

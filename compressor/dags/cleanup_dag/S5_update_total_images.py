@@ -14,7 +14,7 @@ def update_group_image_counts():
     try:
         # 1️⃣ Count images per group
         cur.execute("""
-            SELECT group_id, COUNT(*) AS img_count
+            SELECT group_id, COUNT(*) AS total_images
             FROM images
             GROUP BY group_id;
         """)
@@ -29,10 +29,10 @@ def update_group_image_counts():
         # 2️⃣ Update each group with its image count
         for row in results:
             gid = row["group_id"]
-            count = row["img_count"]
+            count = row["total_images"]
 
             cur.execute(
-                "UPDATE groups SET image_count = %s WHERE id = %s;",
+                "UPDATE groups SET total_images = %s WHERE id = %s;",
                 (count, gid)
             )
 

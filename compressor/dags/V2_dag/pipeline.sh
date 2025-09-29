@@ -6,20 +6,23 @@ source /c/Users/ayatm/OneDrive/Desktop/visal/firebase/compressor/venv_fixed/Scri
 # C:\Users\ayatm\OneDrive\Desktop\visal\firebase\compressor\venv_fixed
 # Infinite loop
 while true; do
-    # echo "Assigning next task to extraction..."
-    # python assign_task_to_extraction.py
+    echo "S4_update_group_heating_to_warm..."
+    python S4_update_group_heating_to_warm.py
 
-    # echo "Processing group running extraction"
-    # python S4_V2_people_extract_and_emb_generation.py 
+    echo "Assigning next task to extraction..."
+    python assign_task_to_extraction.py
 
-    # echo "Processing group running quality score"
-    # python S5_V2_assign_face_quality_score.py
+    echo "Processing group running extraction"
+    python S4_V2_people_extract_and_emb_generation.py 
 
-    # echo "Processing group running grouping"
-    # python S6_V2_group_emb_using_db.py
+    echo "Processing group running quality score"
+    python S5_V2_assign_face_quality_score.py
 
-    # echo "Processing group running insertion"
-    # python S7_V2_insert_person_table.py
+    echo "Processing group running grouping"
+    python S6_V2_group_emb_using_db.py
+
+    echo "Processing group running insertion"
+    python S7_V2_insert_person_table.py
 
     echo "Processing group running thumbnail insertion"
     python S8_update_thumbnail.py

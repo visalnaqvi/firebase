@@ -3,20 +3,20 @@ from psycopg2.extras import DictCursor
 from datetime import datetime, timedelta
 
 def update_groups_to_warm():
-    # conn = psycopg2.connect(
-    #    host="ballast.proxy.rlwy.net",
-    #         port="56193",
-    #         dbname="railway",
-    #         user="postgres",
-    #         password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
-    # )
     conn = psycopg2.connect(
-        host="nozomi.proxy.rlwy.net",
-        port="24794",
-        dbname="railway",
-        user="postgres",
-        password="kdVrNTrtLzzAaOXzKHaJCzhmoHnSDKDG"
+       host="ballast.proxy.rlwy.net",
+            port="56193",
+            dbname="railway",
+            user="postgres",
+            password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
     )
+    # conn = psycopg2.connect(
+    #     host="nozomi.proxy.rlwy.net",
+    #     port="24794",
+    #     dbname="railway",
+    #     user="postgres",
+    #     password="kdVrNTrtLzzAaOXzKHaJCzhmoHnSDKDG"
+    # )
     conn.autocommit = True
     cur = conn.cursor(cursor_factory=DictCursor)
 
@@ -35,7 +35,7 @@ def update_groups_to_warm():
             SELECT 
                 COUNT(*) FILTER (
                     WHERE status = 'warm' 
-                    AND last_processed_at <= (NOW() AT TIME ZONE 'utc') - INTERVAL '1 minutes'
+                    AND last_processed_at <= NOW() - INTERVAL '1 minutes'
                 ) AS valid_images,
                 COUNT(*) FILTER (WHERE status = 'warm') AS total_images
             FROM images

@@ -6,22 +6,31 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 
 def update_process_queue():
     try:
-        # conn = psycopg2.connect(
-        #     host="ballast.proxy.rlwy.net",
-        #     port="56193",
-        #     dbname="railway",
-        #     user="postgres",
-        #     password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
-        # )
         conn = psycopg2.connect(
-            host="nozomi.proxy.rlwy.net",
-            port="24794",
+            host="ballast.proxy.rlwy.net",
+            port="56193",
             dbname="railway",
             user="postgres",
-            password="kdVrNTrtLzzAaOXzKHaJCzhmoHnSDKDG"
+            password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
         )
+        # conn = psycopg2.connect(
+        #     host="nozomi.proxy.rlwy.net",
+        #     port="24794",
+        #     dbname="railway",
+        #     user="postgres",
+        #     password="kdVrNTrtLzzAaOXzKHaJCzhmoHnSDKDG"
+        # )
         cur = conn.cursor(cursor_factory=DictCursor)
-
+        cur.execute("""
+            SELECT id, processing_group, next_group_in_queue, task_status
+            FROM process_status
+            WHERE task = 'extraction' AND task_status = 'failed'
+            LIMIT 1
+        """)
+        row = cur.fetchone()
+        if row:
+            logging.info("Up for retry.")
+            return True
         # 1. Fetch two oldest warm groups
         cur.execute("""
             SELECT id

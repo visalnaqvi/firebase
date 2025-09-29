@@ -114,17 +114,17 @@ class Config:
     QDRANT_PORT: int = int(os.getenv("QDRANT_PORT", "6333"))
     
     # DB Config
-    # DB_HOST: str = "ballast.proxy.rlwy.net"
-    # DB_PORT: str = "56193"
-    # DB_NAME: str = "railway"
-    # DB_USER: str = "postgres"
-    # DB_PASSWORD: str = "AfldldzckDWtkskkAMEhMaDXnMqknaPY"
-
-    DB_HOST: str = "nozomi.proxy.rlwy.net"
-    DB_PORT: str = "24794"
+    DB_HOST: str = "ballast.proxy.rlwy.net"
+    DB_PORT: str = "56193"
     DB_NAME: str = "railway"
     DB_USER: str = "postgres"
-    DB_PASSWORD: str = "kdVrNTrtLzzAaOXzKHaJCzhmoHnSDKDG"
+    DB_PASSWORD: str = "AfldldzckDWtkskkAMEhMaDXnMqknaPY"
+
+    # DB_HOST: str = "nozomi.proxy.rlwy.net"
+    # DB_PORT: str = "24794"
+    # DB_NAME: str = "railway"
+    # DB_USER: str = "postgres"
+    # DB_PASSWORD: str = "kdVrNTrtLzzAaOXzKHaJCzhmoHnSDKDG"
 
 config = Config()
 
@@ -423,7 +423,7 @@ class DatabaseManager:
                     cur.execute(
                         """
                         UPDATE process_status
-                        SET next_group_in_queue = %s , status = 'starting'
+                        SET next_group_in_queue = %s , task_status = 'starting'
                         WHERE task = 'quality_assignment' and next_group_in_queue is null  
                         """,
                         (group_id,)
@@ -559,7 +559,7 @@ class DatabaseManager:
                             UPDATE images 
                             SET status = data.status, error_message = data.error_message, last_processed_at = NOW()
                             FROM (VALUES %s) AS data(id, status, error_message)
-                            WHERE images.id = data.id::uuid
+                            WHERE images.id = data.id
                         """
                         execute_values(cur, query_with_error, with_errors)
                     
@@ -569,7 +569,7 @@ class DatabaseManager:
                             UPDATE images 
                             SET status = data.status, last_processed_at = NOW()
                             FROM (VALUES %s) AS data(id, status)
-                            WHERE images.id = data.id::uuid
+                            WHERE images.id = data.id
                         """
                         execute_values(cur, query_without_error, without_errors)
                     

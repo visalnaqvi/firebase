@@ -205,20 +205,20 @@ def update_last_provrssed_group_column(group_id):
                 conn.close()
 # -------------------- DB Connection --------------------
 def get_db_connection():
-    # return psycopg2.connect(
-    #     host="ballast.proxy.rlwy.net",
-    #     port="56193",
-    #     dbname="railway",
-    #     user="postgres",
-    #     password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
-    # )
     return psycopg2.connect(
-        host="nozomi.proxy.rlwy.net",
-        port="24794",
+        host="ballast.proxy.rlwy.net",
+        port="56193",
         dbname="railway",
         user="postgres",
-        password="kdVrNTrtLzzAaOXzKHaJCzhmoHnSDKDG"
+        password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
     )
+    # return psycopg2.connect(
+    #     host="nozomi.proxy.rlwy.net",
+    #     port="24794",
+    #     dbname="railway",
+    #     user="postgres",
+    #     password="kdVrNTrtLzzAaOXzKHaJCzhmoHnSDKDG"
+    # )
 
         
 # -------------------- Main Script --------------------
@@ -313,7 +313,7 @@ def main():
         update_last_provrssed_group_column(group_id)
         return True
     except Exception as e:
-        update_status(None , f"error occured in thumbnail : {e}" , True , "failed")
+        update_status(group_id , f"error occured in thumbnail : {e}" , True , "failed")
         update_status_history(run_id , "thumbnail" , "run" , None , None , None , group_id , f"error in thumbnail {e}")
         return False
 if __name__ == "__main__":

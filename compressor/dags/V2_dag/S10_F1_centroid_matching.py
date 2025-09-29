@@ -205,20 +205,20 @@ def update_last_provrssed_group_column(group_id):
                 conn.close()
 # DB connection
 def get_db_connection():
-    # return psycopg2.connect(
-    #      host="ballast.proxy.rlwy.net",
-    #     port="56193",
-    #     dbname="railway",
-    #     user="postgres",
-    #     password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
-    # )
     return psycopg2.connect(
-        host="nozomi.proxy.rlwy.net",
-        port="24794",
+         host="ballast.proxy.rlwy.net",
+        port="56193",
         dbname="railway",
         user="postgres",
-        password="kdVrNTrtLzzAaOXzKHaJCzhmoHnSDKDG"
+        password="AfldldzckDWtkskkAMEhMaDXnMqknaPY"
     )
+    # return psycopg2.connect(
+    #     host="nozomi.proxy.rlwy.net",
+    #     port="24794",
+    #     dbname="railway",
+    #     user="postgres",
+    #     password="kdVrNTrtLzzAaOXzKHaJCzhmoHnSDKDG"
+    # )
 
                     
 # Get distinct person_id, group_id pairs

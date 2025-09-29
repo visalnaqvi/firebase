@@ -25,7 +25,7 @@ def get_group_ids():
     ) as conn, conn.cursor() as cur:
         cur.execute("SELECT group_id FROM process_status WHERE status = 'extraction'")
         rows = cur.fetchall()
-    return [r[0] for r in rows if r[0] is not None]
+    return 17
 
 
 def get_face_ids_for_group(group_id):

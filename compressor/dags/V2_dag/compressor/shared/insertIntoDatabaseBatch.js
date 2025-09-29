@@ -34,7 +34,8 @@ async function updateGroupsTableWithAggregation(client, groupId) {
                 SET last_image_uploaded_at = $1,
                     total_images = $2,
                     total_size = $3,
-                    updated_at = NOW()
+                    last_processed_at = NOW(),
+                    last_processed_step = 'compression'
                 WHERE id = $4
             `;
 

@@ -320,7 +320,7 @@ async function updateFolderProcessingStatus(client, folderId, isProcessed = true
     try {
         const query = `
             UPDATE drive_folders 
-            SET is_processed = $1, processed_at = CURRENT_TIMESTAMP 
+            SET is_processed = $1, processed_time = CURRENT_TIMESTAMP 
             WHERE id = $2
         `;
 

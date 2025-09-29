@@ -47,30 +47,7 @@ const main = async () => {
     const folders = await listFoldersSharedBy(sharedByEmail);
     console.log("Folders shared by", sharedByEmail, ":", folders);
 };
-async function getSharedFoldersWithServiceAccount() {
-
-    const response = await drive.files.list({
-        q: "mimeType='application/vnd.google-apps.folder' and sharedWithMe=true",
-        fields: 'files(id,name,owners,permissions)',
-        pageSize: 1000
-    });
-    console.log("res-shared", JSON.stringify(response.data))
-    return response.data.files;
-}
-
-async function listFilesInFolder() {
-    const res = await drive.files.list({
-        q: `'1o2D4pJ47HS8gTMPIUkvopHIuJXQoIc2b' in parents and trashed = false`,
-        fields: "files(id, name, mimeType, size)",
-    });
-    console.log("res-list", JSON.stringify(res.data))
-    return res.data.files || [];
-}
-
-
 if (require.main === module) {
-    // listFilesInFolder()
-    // getSharedFoldersWithServiceAccount();
     main()
 }
 

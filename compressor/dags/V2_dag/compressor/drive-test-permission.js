@@ -2,7 +2,7 @@ const { google } = require("googleapis");
 
 const SCOPES = ["https://www.googleapis.com/auth/drive.readonly"];
 const auth = new google.auth.GoogleAuth({
-    keyFile: "./buttons-2dc4a-866e9e3e7b0a.json",
+    keyFile: "./snapper-gallery-75b9ac194113.json",
     scopes: SCOPES,
 });
 

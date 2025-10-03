@@ -28,7 +28,7 @@ const pool = new Pool({
 });
 
 // Google Drive setup
-const KEYFILEPATH = "./buttons-2dc4a-866e9e3e7b0a.json";
+const KEYFILEPATH = "./snapper-gallery-75b9ac194113.json";
 const SCOPES = ["https://www.googleapis.com/auth/drive.readonly"];
 
 const auth = new google.auth.GoogleAuth({
